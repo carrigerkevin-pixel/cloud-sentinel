@@ -6,6 +6,9 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // Node 24 runs scripts/*.ts directly and requires explicit .ts import
+    // specifiers; safe here because this project never emits via tsc.
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
