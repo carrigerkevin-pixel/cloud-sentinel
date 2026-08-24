@@ -16,6 +16,46 @@ Prior project (for context/style consistency): "Job Skills Trend Analyzer"
   Kubernetes — while working mainly through Claude Code.
 - Security-first: this tool should itself follow good security practices
   (no hardcoded secrets, proper auth, etc.)
+- **Every file must be properly documented** — see the documentation standard
+  below. This is a hard requirement, not a nice-to-have.
+
+## Code documentation standard
+Every file in this repository must be understandable on its own, by someone
+reading it for the first time — including me, months from now, and including a
+reviewer skimming the public repo. This is a learning and portfolio project, so
+comments carry more weight here than they would in ordinary production code.
+
+Required in every source file:
+1. **File header comment.** What this file is, why it exists, and where it fits
+   in the CloudSentinel architecture (collector / rule engine / ML layer /
+   dashboard). If it has a CLI or npm-script entry point, show the commands.
+2. **Doc comments on every export.** Functions, types, classes, and constants
+   that other files import get a comment describing what they do, what their
+   parameters mean, what they return, and how they fail (thrown errors,
+   `undefined` returns, partial results).
+3. **Reasoning comments, not narration.** Explain *why* a non-obvious choice was
+   made — a workaround, an ordering dependency, an AWS API quirk, a deliberate
+   omission. Never write a comment that just restates what the line already
+   says in code.
+4. **Security rationale where it applies.** CloudSentinel is a security tool, so
+   any code touching credentials, endpoints, permissions, auth, or intentionally
+   insecure fixtures must state the risk and how the code handles it.
+5. **Section dividers in long files.** Group related functions under banner
+   comments so a long file can be navigated by scrolling.
+
+Rule of thumb: if a reader would have to open a second file or search AWS docs
+to understand why a line exists, that reason belongs in a comment.
+
+## Working style with Claude Code
+Before writing any file, editing any file, or running any command, Claude gives
+a short plain-language explanation of what it is about to do and why, then stops
+and waits for explicit approval. One explanation per step — no batching several
+files behind a single approval, and no writing first and explaining afterward.
+Reading existing files to gather context does not require approval.
+
+The point is comprehension: I need to be able to follow and later defend every
+design decision in this project in an internship interview.
+
 ## Tech stack
 - **Frontend/API:** TypeScript, Next.js, Node.js
 - **Database:** PostgreSQL (Docker container, local)
