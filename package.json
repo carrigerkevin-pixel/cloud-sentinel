@@ -10,7 +10,8 @@
     "lint": "eslint",
     "seed": "node scripts/seed-localstack.ts",
     "seed:down": "node scripts/seed-localstack.ts --teardown",
-    "seed:list": "node scripts/seed-localstack.ts --list"
+    "seed:list": "node scripts/seed-localstack.ts --list",
+    "collect": "node scripts/collect.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1116.0",

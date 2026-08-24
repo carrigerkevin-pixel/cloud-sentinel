@@ -1,0 +1,335 @@
+{
+  "collectedAt": "2026-08-24T16:47:25.656Z",
+  "endpoint": "http://localhost:4566",
+  "region": "us-east-1",
+  "resources": [
+    {
+      "id": "arn:aws:s3:::cloudsentinel-private-logs",
+      "type": "s3_bucket",
+      "name": "cloudsentinel-private-logs",
+      "region": "us-east-1",
+      "tags": {
+        "Project": "CloudSentinel",
+        "ManagedBy": "seed-localstack",
+        "Posture": "compliant-control"
+      },
+      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "config": {
+        "createdAt": "2026-08-23T18:51:25.000Z",
+        "publicAccessBlock": {
+          "blockPublicAcls": true,
+          "ignorePublicAcls": true,
+          "blockPublicPolicy": true,
+          "restrictPublicBuckets": true
+        },
+        "policy": null,
+        "policyRaw": null,
+        "aclGrants": [
+          {
+            "granteeType": "CanonicalUser",
+            "granteeId": "75aa57f09aa0c8caeab4f8c24e99d10f8e7faeebf76c078efc7c6caea54ba06a",
+            "granteeName": null,
+            "permission": "FULL_CONTROL"
+          }
+        ],
+        "versioning": "Enabled",
+        "loggingEnabled": false,
+        "loggingTargetBucket": null,
+        "encryptionAlgorithm": "AES256"
+      }
+    },
+    {
+      "id": "arn:aws:s3:::cloudsentinel-public-assets",
+      "type": "s3_bucket",
+      "name": "cloudsentinel-public-assets",
+      "region": "us-east-1",
+      "tags": {
+        "Project": "CloudSentinel",
+        "ManagedBy": "seed-localstack",
+        "Posture": "intentionally-insecure"
+      },
+      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "config": {
+        "createdAt": "2026-08-23T18:51:24.000Z",
+        "publicAccessBlock": {
+          "blockPublicAcls": false,
+          "ignorePublicAcls": false,
+          "blockPublicPolicy": false,
+          "restrictPublicBuckets": false
+        },
+        "policy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "PublicReadGetObject",
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::cloudsentinel-public-assets/*"
+            }
+          ]
+        },
+        "policyRaw": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicReadGetObject\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::cloudsentinel-public-assets/*\"}]}",
+        "aclGrants": [
+          {
+            "granteeType": "CanonicalUser",
+            "granteeId": "75aa57f09aa0c8caeab4f8c24e99d10f8e7faeebf76c078efc7c6caea54ba06a",
+            "granteeName": null,
+            "permission": "FULL_CONTROL"
+          },
+          {
+            "granteeType": "Group",
+            "granteeId": "http://acs.amazonaws.com/groups/global/AllUsers",
+            "granteeName": null,
+            "permission": "READ"
+          }
+        ],
+        "versioning": "Disabled",
+        "loggingEnabled": false,
+        "loggingTargetBucket": null,
+        "encryptionAlgorithm": "AES256"
+      }
+    },
+    {
+      "id": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-2120e703584f389c9",
+      "type": "security_group",
+      "name": "cloudsentinel-open-mgmt",
+      "region": "us-east-1",
+      "tags": {
+        "Project": "CloudSentinel",
+        "ManagedBy": "seed-localstack"
+      },
+      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "config": {
+        "groupId": "sg-2120e703584f389c9",
+        "description": "CloudSentinel fixture: management ports open to the world",
+        "vpcId": "vpc-a2e3e77033e3a4610",
+        "ingressRules": [
+          {
+            "protocol": "tcp",
+            "fromPort": 22,
+            "toPort": 22,
+            "ipv4Ranges": [
+              "0.0.0.0/0"
+            ],
+            "ipv6Ranges": [
+              "::/0"
+            ],
+            "sourceSecurityGroupIds": [],
+            "descriptions": [
+              "SSH from anywhere",
+              "SSH from anywhere (IPv6)"
+            ]
+          },
+          {
+            "protocol": "tcp",
+            "fromPort": 3389,
+            "toPort": 3389,
+            "ipv4Ranges": [
+              "0.0.0.0/0"
+            ],
+            "ipv6Ranges": [],
+            "sourceSecurityGroupIds": [],
+            "descriptions": [
+              "RDP from anywhere"
+            ]
+          }
+        ],
+        "egressRules": [
+          {
+            "protocol": "-1",
+            "fromPort": null,
+            "toPort": null,
+            "ipv4Ranges": [
+              "0.0.0.0/0"
+            ],
+            "ipv6Ranges": [],
+            "sourceSecurityGroupIds": [],
+            "descriptions": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-6764d6fef2fcd1b05",
+      "type": "security_group",
+      "name": "cloudsentinel-restricted-app",
+      "region": "us-east-1",
+      "tags": {
+        "Project": "CloudSentinel",
+        "ManagedBy": "seed-localstack"
+      },
+      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "config": {
+        "groupId": "sg-6764d6fef2fcd1b05",
+        "description": "CloudSentinel fixture: HTTPS from the VPC range only",
+        "vpcId": "vpc-a2e3e77033e3a4610",
+        "ingressRules": [
+          {
+            "protocol": "tcp",
+            "fromPort": 443,
+            "toPort": 443,
+            "ipv4Ranges": [
+              "10.0.0.0/16"
+            ],
+            "ipv6Ranges": [],
+            "sourceSecurityGroupIds": [],
+            "descriptions": [
+              "HTTPS from VPC"
+            ]
+          }
+        ],
+        "egressRules": [
+          {
+            "protocol": "-1",
+            "fromPort": null,
+            "toPort": null,
+            "ipv4Ranges": [
+              "0.0.0.0/0"
+            ],
+            "ipv6Ranges": [],
+            "sourceSecurityGroupIds": [],
+            "descriptions": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-9b83e8b19653b4290",
+      "type": "security_group",
+      "name": "default",
+      "region": "us-east-1",
+      "tags": {},
+      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "config": {
+        "groupId": "sg-9b83e8b19653b4290",
+        "description": "default VPC security group",
+        "vpcId": "vpc-a2e3e77033e3a4610",
+        "ingressRules": [],
+        "egressRules": [
+          {
+            "protocol": "-1",
+            "fromPort": null,
+            "toPort": null,
+            "ipv4Ranges": [
+              "0.0.0.0/0"
+            ],
+            "ipv6Ranges": [],
+            "sourceSecurityGroupIds": [],
+            "descriptions": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "arn:aws:iam::000000000000:user/cloudsentinel-admin-svc",
+      "type": "iam_user",
+      "name": "cloudsentinel-admin-svc",
+      "region": "global",
+      "tags": {
+        "Project": "CloudSentinel",
+        "ManagedBy": "seed-localstack"
+      },
+      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "config": {
+        "userName": "cloudsentinel-admin-svc",
+        "arn": "arn:aws:iam::000000000000:user/cloudsentinel-admin-svc",
+        "createdAt": "2026-08-23T18:51:25.120Z",
+        "passwordLastUsed": null,
+        "hasConsoleAccess": true,
+        "mfaDeviceIds": [],
+        "accessKeys": [
+          {
+            "accessKeyId": "LKIAQAAAAAAANDD6OT63",
+            "status": "Active",
+            "createdAt": "2026-08-23T18:51:25.167Z",
+            "ageInDays": 0
+          }
+        ],
+        "attachedPolicies": [
+          {
+            "policyName": "CloudSentinelWildcardAccess",
+            "policyArn": "arn:aws:iam::000000000000:policy/CloudSentinelWildcardAccess",
+            "document": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AllowEverything",
+                  "Effect": "Allow",
+                  "Action": "*",
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "inlinePolicies": [
+          {
+            "policyName": "CloudSentinelPassRoleAnywhere",
+            "document": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "PassAnyRole",
+                  "Effect": "Allow",
+                  "Action": [
+                    "iam:PassRole",
+                    "iam:CreatePolicyVersion",
+                    "iam:AttachUserPolicy"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "groupNames": []
+      }
+    },
+    {
+      "id": "arn:aws:iam::000000000000:user/cloudsentinel-readonly-svc",
+      "type": "iam_user",
+      "name": "cloudsentinel-readonly-svc",
+      "region": "global",
+      "tags": {
+        "Project": "CloudSentinel",
+        "ManagedBy": "seed-localstack"
+      },
+      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "config": {
+        "userName": "cloudsentinel-readonly-svc",
+        "arn": "arn:aws:iam::000000000000:user/cloudsentinel-readonly-svc",
+        "createdAt": "2026-08-23T18:51:25.173Z",
+        "passwordLastUsed": null,
+        "hasConsoleAccess": false,
+        "mfaDeviceIds": [],
+        "accessKeys": [],
+        "attachedPolicies": [],
+        "inlinePolicies": [
+          {
+            "policyName": "CloudSentinelReadOnlyLogs",
+            "document": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "ReadLogsBucketOnly",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:ListBucket"
+                  ],
+                  "Resource": [
+                    "arn:aws:s3:::cloudsentinel-private-logs",
+                    "arn:aws:s3:::cloudsentinel-private-logs/*"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "groupNames": []
+      }
+    }
+  ],
+  "errors": []
+}
