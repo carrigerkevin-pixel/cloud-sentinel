@@ -1,5 +1,5 @@
 {
-  "collectedAt": "2026-08-24T16:47:25.656Z",
+  "collectedAt": "2026-08-24T16:59:10.209Z",
   "endpoint": "http://localhost:4566",
   "region": "us-east-1",
   "resources": [
@@ -13,7 +13,8 @@
         "ManagedBy": "seed-localstack",
         "Posture": "compliant-control"
       },
-      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "unobserved": [],
       "config": {
         "createdAt": "2026-08-23T18:51:25.000Z",
         "publicAccessBlock": {
@@ -48,7 +49,8 @@
         "ManagedBy": "seed-localstack",
         "Posture": "intentionally-insecure"
       },
-      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "unobserved": [],
       "config": {
         "createdAt": "2026-08-23T18:51:24.000Z",
         "publicAccessBlock": {
@@ -99,7 +101,8 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "unobserved": [],
       "config": {
         "groupId": "sg-2120e703584f389c9",
         "description": "CloudSentinel fixture: management ports open to the world",
@@ -159,7 +162,8 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "unobserved": [],
       "config": {
         "groupId": "sg-6764d6fef2fcd1b05",
         "description": "CloudSentinel fixture: HTTPS from the VPC range only",
@@ -200,7 +204,8 @@
       "name": "default",
       "region": "us-east-1",
       "tags": {},
-      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "unobserved": [],
       "config": {
         "groupId": "sg-9b83e8b19653b4290",
         "description": "default VPC security group",
@@ -230,7 +235,8 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "unobserved": [],
       "config": {
         "userName": "cloudsentinel-admin-svc",
         "arn": "arn:aws:iam::000000000000:user/cloudsentinel-admin-svc",
@@ -295,7 +301,8 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:47:25.656Z",
+      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "unobserved": [],
       "config": {
         "userName": "cloudsentinel-readonly-svc",
         "arn": "arn:aws:iam::000000000000:user/cloudsentinel-readonly-svc",

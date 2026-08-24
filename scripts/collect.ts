@@ -164,6 +164,16 @@ function printSummary(inventory: ResourceInventory): void {
     for (const resource of matching) {
       console.log(`  ${style.bold(resource.name)} ${style.dim(resource.region)}`);
       console.log(`    ${style.dim(describe(resource).join("  "))}`);
+
+      // Printed in warning colour rather than dimmed with the rest, because
+      // the values shown above for these fields are defaults standing in for
+      // data that was never read. Anything concluded from them is unreliable,
+      // and that has to be visible in the terminal — not only in the JSON.
+      if (resource.unobserved.length > 0) {
+        console.log(
+          `    ${style.yellow(`unobserved: ${resource.unobserved.join(", ")}`)}`,
+        );
+      }
     }
   }
 
@@ -262,9 +272,13 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(inventory, null, 2));
   } else {
     printSummary(inventory);
+    const partial = inventory.resources.filter(
+      (resource) => resource.unobserved.length > 0,
+    ).length;
     console.log(
       `\n${style.bold("Total")}: ${inventory.resources.length} resources, ` +
-        `${inventory.errors.length} errors  ${style.dim(collectedAt)}\n`,
+        `${inventory.errors.length} errors, ` +
+        `${partial} partially observed  ${style.dim(collectedAt)}\n`,
     );
   }
 
