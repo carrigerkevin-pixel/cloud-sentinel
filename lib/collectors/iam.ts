@@ -32,20 +32,25 @@
  *   ListUserPolicies + GetUserPolicy   inline policies
  *   ListMFADevices             whether MFA is enrolled
  *   ListAccessKeys             long-lived programmatic credentials
- *   ListGroupsForUser          permissions inherited invisibly
+ *   ListGroupsForUser          group membership
+ *   ListAttachedGroupPolicies + ListGroupPolicies + GetGroupPolicy
+ *                              what those groups actually grant
  *   GetLoginProfile            whether the user can sign in to the console
  *   ListUserTags               tags (ListUsers does not return them)
  */
 
 import {
   type AccessKeyMetadata,
+  GetGroupPolicyCommand,
   GetLoginProfileCommand,
   GetPolicyCommand,
   GetPolicyVersionCommand,
   GetUserPolicyCommand,
   type IAMClient,
   ListAccessKeysCommand,
+  ListAttachedGroupPoliciesCommand,
   ListAttachedUserPoliciesCommand,
+  ListGroupPoliciesCommand,
   ListGroupsForUserCommand,
   ListMFADevicesCommand,
   ListUserPoliciesCommand,
@@ -59,6 +64,7 @@ import type {
   AccessKeySummary,
   AttachedPolicySummary,
   CollectionError,
+  GroupMembership,
   IamUserResource,
   InlinePolicySummary,
   PolicyDocument,
@@ -298,6 +304,108 @@ async function resolveManagedPolicy(
   return document;
 }
 
+/**
+ * Resolves one IAM group down to the policies it grants its members.
+ *
+ * `ListGroupsForUser` returns only group names, which says nothing about what
+ * membership actually confers. Without this step a user whose every permission
+ * arrives through a group looks like an account with no permissions at all —
+ * the false negative described on {@link GroupMembership}.
+ *
+ * @param groupCache Memo across the whole scan, keyed by group name. Groups
+ *                   exist precisely to be shared, so a `developers` group with
+ *                   ten members would otherwise be resolved ten times. One
+ *                   consequence worth knowing: if resolving a group fails, the
+ *                   error is attributed to whichever user happened to trigger
+ *                   the lookup first, and later members reuse the cached result
+ *                   without recording an error of their own. The `unobserved`
+ *                   marker on that first user is the durable signal.
+ */
+async function resolveGroup(
+  iam: IAMClient,
+  groupName: string,
+  userName: string,
+  errors: CollectionError[],
+  unobserved: string[],
+  policyCache: Map<string, PolicyDocument | null>,
+  groupCache: Map<string, GroupMembership>,
+): Promise<GroupMembership> {
+  const cached = groupCache.get(groupName);
+  if (cached) return cached;
+
+  const [attachedResponse, inlineResponse] = await Promise.all([
+    optional({
+      field: "groups",
+      operation: "ListAttachedGroupPolicies",
+      userName,
+      errors,
+      unobserved,
+      call: () =>
+        iam.send(new ListAttachedGroupPoliciesCommand({ GroupName: groupName })),
+    }),
+    optional({
+      field: "groups",
+      operation: "ListGroupPolicies",
+      userName,
+      errors,
+      unobserved,
+      call: () => iam.send(new ListGroupPoliciesCommand({ GroupName: groupName })),
+    }),
+  ]);
+
+  // Managed policies attached to a group go through the same ARN cache as
+  // user-level ones — the same policy is frequently attached in both places.
+  const attachedPolicies: AttachedPolicySummary[] = await Promise.all(
+    (attachedResponse?.AttachedPolicies ?? [])
+      .filter(
+        (policy): policy is { PolicyName: string; PolicyArn: string } =>
+          typeof policy.PolicyName === "string" &&
+          typeof policy.PolicyArn === "string",
+      )
+      .map(async (policy) => ({
+        policyName: policy.PolicyName,
+        policyArn: policy.PolicyArn,
+        document: await resolveManagedPolicy(
+          iam,
+          policy.PolicyArn,
+          userName,
+          errors,
+          unobserved,
+          policyCache,
+        ),
+      })),
+  );
+
+  const inlinePolicies: InlinePolicySummary[] = await Promise.all(
+    (inlineResponse?.PolicyNames ?? []).map(async (policyName) => {
+      const response = await optional({
+        field: "groups",
+        operation: "GetGroupPolicy",
+        userName,
+        errors,
+        unobserved,
+        call: () =>
+          iam.send(
+            new GetGroupPolicyCommand({
+              GroupName: groupName,
+              PolicyName: policyName,
+            }),
+          ),
+      });
+      const raw = response?.PolicyDocument;
+      return { policyName, document: raw ? parsePolicyDocument(raw) : null };
+    }),
+  );
+
+  const membership: GroupMembership = {
+    groupName,
+    attachedPolicies,
+    inlinePolicies,
+  };
+  groupCache.set(groupName, membership);
+  return membership;
+}
+
 // ---------------------------------------------------------------------------
 // Per-user collection
 // ---------------------------------------------------------------------------
@@ -320,6 +428,7 @@ async function collectUser(
   now: Date,
   errors: CollectionError[],
   policyCache: Map<string, PolicyDocument | null>,
+  groupCache: Map<string, GroupMembership>,
 ): Promise<IamUserResource> {
   const userName = user.UserName;
 
@@ -449,6 +558,28 @@ async function collectUser(
     }),
   );
 
+  // --- Groups --------------------------------------------------------------
+  // Resolved rather than just named, so that permissions inherited through a
+  // group are visible to a rule. Membership lists are short in practice, so
+  // these run concurrently and the cache absorbs the overlap between users.
+  const groupNames = (groupsResponse?.Groups ?? [])
+    .map((group) => group.GroupName)
+    .filter((name): name is string => typeof name === "string");
+
+  const groups = await Promise.all(
+    groupNames.map((groupName) =>
+      resolveGroup(
+        iam,
+        groupName,
+        userName,
+        errors,
+        unobserved,
+        policyCache,
+        groupCache,
+      ),
+    ),
+  );
+
   // --- Access keys ---------------------------------------------------------
   const accessKeys: AccessKeySummary[] = (keysResponse?.AccessKeyMetadata ?? [])
     .filter(
@@ -489,9 +620,7 @@ async function collectUser(
       accessKeys,
       attachedPolicies,
       inlinePolicies,
-      groupNames: (groupsResponse?.Groups ?? [])
-        .map((group) => group.GroupName)
-        .filter((name): name is string => typeof name === "string"),
+      groups,
     },
   };
 }
@@ -533,6 +662,10 @@ export async function collectIamUsers(
   // for every attachment.
   const policyCache = new Map<string, PolicyDocument | null>();
 
+  // Groups exist to be shared, so resolving each one once per scan rather than
+  // once per member is the difference between a handful of calls and dozens.
+  const groupCache = new Map<string, GroupMembership>();
+
   let marker: string | undefined;
   do {
     let page;
@@ -557,7 +690,15 @@ export async function collectIamUsers(
     // because each marker is only known once the previous page returns.
     const collected = await Promise.all(
       users.map((user) =>
-        collectUser(client, user, collectedAt, now, errors, policyCache),
+        collectUser(
+          client,
+          user,
+          collectedAt,
+          now,
+          errors,
+          policyCache,
+          groupCache,
+        ),
       ),
     );
     resources.push(...collected);

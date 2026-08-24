@@ -455,6 +455,27 @@ export interface InlinePolicySummary {
   document: PolicyDocument | null;
 }
 
+/**
+ * An IAM group the user belongs to, together with what that group grants.
+ *
+ * Group-derived permissions are the most commonly missed part of an IAM audit,
+ * because they are invisible from the user object itself. A user with no
+ * attached policies and no inline policies can still be a full administrator
+ * through one group membership, and a scanner that only reads the user would
+ * call that account clean — a false negative, which is the worst kind of error
+ * a security tool can make, since nothing about the output invites a second
+ * look.
+ *
+ * The policies here use the same summary types as the user-level ones, so a
+ * rule can evaluate "does this principal have Action '*' on Resource '*'" with
+ * identical code whether the grant arrived directly or through a group.
+ */
+export interface GroupMembership {
+  groupName: string;
+  attachedPolicies: AttachedPolicySummary[];
+  inlinePolicies: InlinePolicySummary[];
+}
+
 /** Everything CloudSentinel observes about one IAM user. */
 export interface IamUserConfig {
   userName: string;
@@ -485,14 +506,13 @@ export interface IamUserConfig {
   inlinePolicies: InlinePolicySummary[];
 
   /**
-   * IAM groups the user belongs to.
+   * Groups the user belongs to, each resolved down to the policies it grants.
    *
-   * Collected because permissions inherited through a group are invisible when
-   * looking at the user alone — a user with no attached policies can still be
-   * an administrator via group membership. Group policy documents are not
-   * resolved yet; that is a later enhancement.
+   * A rule computing a user's effective permissions must union these with
+   * `attachedPolicies` and `inlinePolicies` — reading only the user-level
+   * fields misses every permission inherited through a group.
    */
-  groupNames: string[];
+  groups: GroupMembership[];
 }
 
 /** An IAM user. */

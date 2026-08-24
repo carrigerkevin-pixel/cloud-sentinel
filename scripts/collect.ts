@@ -129,13 +129,24 @@ function describe(resource: Resource): string[] {
     }
     case "iam_user": {
       const { config } = resource;
+      // Group-derived policies are counted separately from direct ones so a
+      // user who is powerful only through a group does not read as an empty
+      // account in this output — which is exactly how that false negative
+      // used to hide.
+      const groupPolicies = config.groups.reduce(
+        (total, group) =>
+          total + group.attachedPolicies.length + group.inlinePolicies.length,
+        0,
+      );
       return [
         `console=${config.hasConsoleAccess ? "yes" : "no"}`,
         `mfaDevices=${config.mfaDeviceIds.length}`,
         `accessKeys=${config.accessKeys.length}`,
-        `managedPolicies=${config.attachedPolicies.length}`,
-        `inlinePolicies=${config.inlinePolicies.length}`,
-        `groups=${config.groupNames.length}`,
+        `directPolicies=${
+          config.attachedPolicies.length + config.inlinePolicies.length
+        }`,
+        `groups=${config.groups.length}`,
+        `viaGroupPolicies=${groupPolicies}`,
       ];
     }
   }
