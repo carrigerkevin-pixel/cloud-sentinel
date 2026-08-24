@@ -35,23 +35,34 @@ import {
   type EC2Client,
 } from "@aws-sdk/client-ec2";
 import {
+  AddUserToGroupCommand,
+  AttachGroupPolicyCommand,
   AttachUserPolicyCommand,
   CreateAccessKeyCommand,
+  CreateGroupCommand,
   CreateLoginProfileCommand,
   CreatePolicyCommand,
   CreateUserCommand,
   DeleteAccessKeyCommand,
+  DeleteGroupCommand,
+  DeleteGroupPolicyCommand,
   DeleteLoginProfileCommand,
   DeletePolicyCommand,
   DeleteUserCommand,
   DeleteUserPolicyCommand,
+  DetachGroupPolicyCommand,
   DetachUserPolicyCommand,
   type IAMClient,
   ListAccessKeysCommand,
+  ListAttachedGroupPoliciesCommand,
   ListAttachedUserPoliciesCommand,
+  ListGroupPoliciesCommand,
+  ListGroupsForUserCommand,
   ListPoliciesCommand,
   ListUserPoliciesCommand,
+  PutGroupPolicyCommand,
   PutUserPolicyCommand,
+  RemoveUserFromGroupCommand,
 } from "@aws-sdk/client-iam";
 
 import {
@@ -73,6 +84,25 @@ const VULNERABLE_SG = "cloudsentinel-open-mgmt";
 const VULNERABLE_USER = "cloudsentinel-admin-svc";
 const WILDCARD_POLICY = "CloudSentinelWildcardAccess";
 const INLINE_POLICY = "CloudSentinelPassRoleAnywhere";
+
+/**
+ * The group-inheritance fixture.
+ *
+ * `GROUP_MEMBER_USER` has no attached policies, no inline policies, no access
+ * keys, and no console login — inspected on its own it is the most boring
+ * account in the environment. Every permission it holds comes from
+ * `VULNERABLE_GROUP`, which carries both a managed policy (`*` on `*`) and an
+ * inline one granting full `iam:*`.
+ *
+ * This exists because a scanner that reads only user-level permissions reports
+ * this account as clean, which is a false negative — the failure mode where the
+ * tool says nothing is wrong and gives the reader no reason to look twice.
+ * Seeding it means that path is exercised on every run rather than only in
+ * theory.
+ */
+const VULNERABLE_GROUP = "cloudsentinel-legacy-admins";
+const GROUP_INLINE_POLICY = "CloudSentinelGroupIamControl";
+const GROUP_MEMBER_USER = "cloudsentinel-group-member";
 
 /** Compliant control group — the rule engine should leave these alone. */
 const COMPLIANT_BUCKET = "cloudsentinel-private-logs";
@@ -101,6 +131,10 @@ const EXPECTED_FINDINGS: ReadonlyArray<readonly [resource: string, finding: stri
   [VULNERABLE_USER, "IAM user has an inline policy allowing unrestricted iam:PassRole"],
   [VULNERABLE_USER, "IAM user has console access but no MFA device"],
   [VULNERABLE_USER, "IAM user has a long-lived access key"],
+  [
+    GROUP_MEMBER_USER,
+    "IAM user inherits Action '*' on Resource '*' through group membership",
+  ],
 ];
 
 // ---------------------------------------------------------------------------
@@ -445,6 +479,25 @@ const WILDCARD_POLICY_DOC = JSON.stringify({
   ],
 });
 
+/**
+ * Inline policy on the group. Deliberately different in shape from the managed
+ * `*:*` policy so that both resolution paths the collector uses —
+ * ListAttachedGroupPolicies (managed, via GetPolicyVersion) and
+ * ListGroupPolicies (inline, via GetGroupPolicy) — are exercised by the
+ * fixtures rather than only one of them.
+ */
+const GROUP_IAM_CONTROL_DOC = JSON.stringify({
+  Version: "2012-10-17",
+  Statement: [
+    {
+      Sid: "GroupWideIamControl",
+      Effect: "Allow",
+      Action: ["iam:*", "sts:AssumeRole"],
+      Resource: "*",
+    },
+  ],
+});
+
 const PASS_ROLE_DOC = JSON.stringify({
   Version: "2012-10-17",
   Statement: [
@@ -544,6 +597,49 @@ async function seedIam(): Promise<void> {
     log.skip(`  access key already exists (${AccessKeyMetadata![0]!.AccessKeyId})`);
   }
 
+  // --- Insecure: privilege inherited through a group -----------------------
+  // The point of this fixture is that the user below is unremarkable in every
+  // way a user-level check can see. Only following the group membership reveals
+  // that it holds full administrative access.
+  await tolerate(ALREADY_EXISTS, () =>
+    iam.send(new CreateGroupCommand({ GroupName: VULNERABLE_GROUP })),
+  );
+  log.ok(`group ${VULNERABLE_GROUP}`);
+
+  await tolerate(ALREADY_EXISTS, () =>
+    iam.send(
+      new AttachGroupPolicyCommand({
+        GroupName: VULNERABLE_GROUP,
+        PolicyArn: policyArn,
+      }),
+    ),
+  );
+  log.ok(`  attached managed policy ${WILDCARD_POLICY} (*:*)`);
+
+  await iam.send(
+    new PutGroupPolicyCommand({
+      GroupName: VULNERABLE_GROUP,
+      PolicyName: GROUP_INLINE_POLICY,
+      PolicyDocument: GROUP_IAM_CONTROL_DOC,
+    }),
+  );
+  log.ok(`  inline policy ${GROUP_INLINE_POLICY} (iam:* on *)`);
+
+  await tolerate(ALREADY_EXISTS, () =>
+    iam.send(new CreateUserCommand({ UserName: GROUP_MEMBER_USER, Tags: TAGS })),
+  );
+  // AddUserToGroup is naturally idempotent — re-adding an existing member is a
+  // no-op rather than an error — so no tolerate wrapper is needed here.
+  await iam.send(
+    new AddUserToGroupCommand({
+      GroupName: VULNERABLE_GROUP,
+      UserName: GROUP_MEMBER_USER,
+    }),
+  );
+  log.ok(
+    `user ${GROUP_MEMBER_USER} (no direct policies; admin only via ${VULNERABLE_GROUP})`,
+  );
+
   // --- Compliant control: scoped, no console, no keys ----------------------
   await tolerate(ALREADY_EXISTS, () =>
     iam.send(new CreateUserCommand({ UserName: COMPLIANT_USER, Tags: TAGS })),
@@ -575,7 +671,7 @@ async function destroyIam(): Promise<void> {
   const iam = createIAMClient();
   log.step("IAM teardown");
 
-  for (const userName of [VULNERABLE_USER, COMPLIANT_USER]) {
+  for (const userName of [VULNERABLE_USER, GROUP_MEMBER_USER, COMPLIANT_USER]) {
     const attached = await tolerate(NOT_FOUND, () =>
       iam.send(new ListAttachedUserPoliciesCommand({ UserName: userName })),
     );
@@ -621,6 +717,23 @@ async function destroyIam(): Promise<void> {
       );
     }
 
+    // Group membership is also a dependency: IAM refuses to delete a user who
+    // still belongs to a group.
+    const memberships = await tolerate(NOT_FOUND, () =>
+      iam.send(new ListGroupsForUserCommand({ UserName: userName })),
+    );
+    for (const group of memberships?.Groups ?? []) {
+      if (!group.GroupName) continue;
+      await tolerate(NOT_FOUND, () =>
+        iam.send(
+          new RemoveUserFromGroupCommand({
+            UserName: userName,
+            GroupName: group.GroupName!,
+          }),
+        ),
+      );
+    }
+
     await tolerate(NOT_FOUND, () =>
       iam.send(new DeleteLoginProfileCommand({ UserName: userName })),
     );
@@ -628,6 +741,46 @@ async function destroyIam(): Promise<void> {
       iam.send(new DeleteUserCommand({ UserName: userName })),
     );
     log.gone(`user ${userName}`);
+  }
+
+  // The group must go before the managed policy: IAM refuses to delete a
+  // policy that is still attached to anything.
+  const groupAttached = await tolerate(NOT_FOUND, () =>
+    iam.send(new ListAttachedGroupPoliciesCommand({ GroupName: VULNERABLE_GROUP })),
+  );
+  if (groupAttached) {
+    for (const policy of groupAttached.AttachedPolicies ?? []) {
+      if (!policy.PolicyArn) continue;
+      await tolerate(NOT_FOUND, () =>
+        iam.send(
+          new DetachGroupPolicyCommand({
+            GroupName: VULNERABLE_GROUP,
+            PolicyArn: policy.PolicyArn!,
+          }),
+        ),
+      );
+    }
+
+    const groupInline = await tolerate(NOT_FOUND, () =>
+      iam.send(new ListGroupPoliciesCommand({ GroupName: VULNERABLE_GROUP })),
+    );
+    for (const policyName of groupInline?.PolicyNames ?? []) {
+      await tolerate(NOT_FOUND, () =>
+        iam.send(
+          new DeleteGroupPolicyCommand({
+            GroupName: VULNERABLE_GROUP,
+            PolicyName: policyName,
+          }),
+        ),
+      );
+    }
+
+    await tolerate(NOT_FOUND, () =>
+      iam.send(new DeleteGroupCommand({ GroupName: VULNERABLE_GROUP })),
+    );
+    log.gone(`group ${VULNERABLE_GROUP}`);
+  } else {
+    log.skip(`group ${VULNERABLE_GROUP} (absent)`);
   }
 
   const policyArn = await findLocalPolicyArn(iam, WILDCARD_POLICY);

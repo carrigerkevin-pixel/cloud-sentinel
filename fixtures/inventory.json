@@ -1,5 +1,5 @@
 {
-  "collectedAt": "2026-08-24T16:59:10.209Z",
+  "collectedAt": "2026-08-24T17:04:13.049Z",
   "endpoint": "http://localhost:4566",
   "region": "us-east-1",
   "resources": [
@@ -13,7 +13,7 @@
         "ManagedBy": "seed-localstack",
         "Posture": "compliant-control"
       },
-      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "collectedAt": "2026-08-24T17:04:13.049Z",
       "unobserved": [],
       "config": {
         "createdAt": "2026-08-23T18:51:25.000Z",
@@ -49,7 +49,7 @@
         "ManagedBy": "seed-localstack",
         "Posture": "intentionally-insecure"
       },
-      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "collectedAt": "2026-08-24T17:04:13.049Z",
       "unobserved": [],
       "config": {
         "createdAt": "2026-08-23T18:51:24.000Z",
@@ -101,7 +101,7 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "collectedAt": "2026-08-24T17:04:13.049Z",
       "unobserved": [],
       "config": {
         "groupId": "sg-2120e703584f389c9",
@@ -162,7 +162,7 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "collectedAt": "2026-08-24T17:04:13.049Z",
       "unobserved": [],
       "config": {
         "groupId": "sg-6764d6fef2fcd1b05",
@@ -204,7 +204,7 @@
       "name": "default",
       "region": "us-east-1",
       "tags": {},
-      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "collectedAt": "2026-08-24T17:04:13.049Z",
       "unobserved": [],
       "config": {
         "groupId": "sg-9b83e8b19653b4290",
@@ -235,7 +235,7 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "collectedAt": "2026-08-24T17:04:13.049Z",
       "unobserved": [],
       "config": {
         "userName": "cloudsentinel-admin-svc",
@@ -289,7 +289,71 @@
             }
           }
         ],
-        "groupNames": []
+        "groups": []
+      }
+    },
+    {
+      "id": "arn:aws:iam::000000000000:user/cloudsentinel-group-member",
+      "type": "iam_user",
+      "name": "cloudsentinel-group-member",
+      "region": "global",
+      "tags": {
+        "Project": "CloudSentinel",
+        "ManagedBy": "seed-localstack"
+      },
+      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "unobserved": [],
+      "config": {
+        "userName": "cloudsentinel-group-member",
+        "arn": "arn:aws:iam::000000000000:user/cloudsentinel-group-member",
+        "createdAt": "2026-08-24T17:04:04.418Z",
+        "passwordLastUsed": null,
+        "hasConsoleAccess": false,
+        "mfaDeviceIds": [],
+        "accessKeys": [],
+        "attachedPolicies": [],
+        "inlinePolicies": [],
+        "groups": [
+          {
+            "groupName": "cloudsentinel-legacy-admins",
+            "attachedPolicies": [
+              {
+                "policyName": "CloudSentinelWildcardAccess",
+                "policyArn": "arn:aws:iam::000000000000:policy/CloudSentinelWildcardAccess",
+                "document": {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Sid": "AllowEverything",
+                      "Effect": "Allow",
+                      "Action": "*",
+                      "Resource": "*"
+                    }
+                  ]
+                }
+              }
+            ],
+            "inlinePolicies": [
+              {
+                "policyName": "CloudSentinelGroupIamControl",
+                "document": {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Sid": "GroupWideIamControl",
+                      "Effect": "Allow",
+                      "Action": [
+                        "iam:*",
+                        "sts:AssumeRole"
+                      ],
+                      "Resource": "*"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       }
     },
     {
@@ -301,7 +365,7 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T16:59:10.209Z",
+      "collectedAt": "2026-08-24T17:04:13.049Z",
       "unobserved": [],
       "config": {
         "userName": "cloudsentinel-readonly-svc",
@@ -334,7 +398,7 @@
             }
           }
         ],
-        "groupNames": []
+        "groups": []
       }
     }
   ],
