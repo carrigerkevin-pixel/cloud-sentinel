@@ -89,6 +89,38 @@ design decision in this project in an internship interview.
    (the actual `awslocal` Python wrapper has a broken `pathlib` home-directory
    bug on this machine — the profile function `awslocal { aws --endpoint-url=http://localhost:4566 $args }`
    is the workaround in use instead of the pip-installed wrapper)
+
+### Phase 1 complete — LocalStack fixtures
+✅ `scripts/seed-localstack.ts` provisions intentionally-insecure resources
+   plus a compliant control group, and tears them all back down. Idempotent.
+   - `npm run seed` / `npm run seed:down` / `npm run seed:list`
+   - 13 expected findings across a public S3 bucket, a security group open on
+     tcp/22 and tcp/3389 (IPv4 and IPv6), an over-privileged IAM user with a
+     console login and no MFA, and an IAM user who is an administrator *only*
+     through group membership
+   - Compliant controls (`cloudsentinel-private-logs`,
+     `cloudsentinel-restricted-app`, `cloudsentinel-readonly-svc`) are clean
+     under every planned rule, so they serve as a false-positive baseline
+   - Teardown verified end to end: `seed:down` leaves nothing behind
+
+### Phase 2 complete — collector service
+✅ `lib/types/resource.ts` — normalized resource model. A discriminated union
+   on `type`, so rules get compile-time narrowing of `config`. Records observed
+   facts only; no compliance verdicts live in the collector.
+✅ `lib/collectors/{s3,ec2,iam}.ts` — strictly read-only (`List`/`Get`/
+   `Describe` only). Every resource carries an `unobserved` list naming settings
+   that could not be read, so a rule can report *inconclusive* rather than
+   mistaking a failed observation for a clean result.
+✅ `scripts/collect.ts` — `npm run collect`, with `--json` and `--out <file>`.
+   Runs all three collectors under one shared timestamp and exits non-zero if
+   any collection error occurred.
+✅ `lib/util/concurrency.ts` — bounded parallelism, default 8, tunable with
+   `COLLECTOR_CONCURRENCY`. AWS clients use adaptive retry mode.
+✅ `npm test` — 53 tests on Node's built-in runner. No test framework
+   dependency, and no Docker or LocalStack needed to run them.
+✅ `fixtures/inventory.json` — committed snapshot of a full scan, so the rule
+   engine can be developed and tested offline. Regenerate with
+   `npm run collect -- --out fixtures/inventory.json`.
  
 ## Environment notes specific to this machine
 - OS: Windows, PowerShell as primary shell
@@ -99,17 +131,31 @@ design decision in this project in an internship interview.
   (needed for `npx` to run)
 - AWS CLI dummy credentials configured (`test`/`test`/`us-east-1`) — LocalStack
   doesn't validate real credentials, just needs something present
+- LocalStack runs with **persistence disabled**, so all seeded fixtures are lost
+  whenever the container restarts. Re-run `npm run seed` after starting it.
+- The Git Bash shell does not pick up the AWS CLI's configured default region.
+  Ad-hoc `aws` commands from Bash need `--region us-east-1` explicitly, or
+  `AWS_REGION` exported; PowerShell is unaffected.
 ## Not started yet (next steps)
-1. Write LocalStack provisioning script to seed intentionally-insecure test
-   resources: public S3 bucket, security group open on sensitive ports,
-   over-permissive IAM user/policy without MFA
-2. Build the Node/TS collector service to read those resources via AWS SDK
-3. Build the rule engine (5-8 CIS-style checks)
-4. Set up Postgres schema (resources, findings, scans tables) via Docker
-5. Build the Next.js dashboard + API layer
-6. Add the ML anomaly detection layer with synthetic CloudTrail logs
-7. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
-8. Security hardening pass, README, demo video
+1. **Phase 3 — rule engine.** 5-8 CIS-style checks reading a
+   `ResourceInventory`. Target the 13 findings in `EXPECTED_FINDINGS` in
+   `scripts/seed-localstack.ts`; the compliant controls must produce zero
+   findings. Rules must consult a resource's `unobserved` list before drawing
+   any conclusion from a `null` config field — a failed observation is not a
+   clean result. Can be built entirely against `fixtures/inventory.json` with
+   no LocalStack running.
+2. Set up Postgres schema (resources, findings, scans tables) via Docker
+3. Build the Next.js dashboard + API layer
+4. Add the ML anomaly detection layer with synthetic CloudTrail logs
+5. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
+6. Security hardening pass, README, demo video
+
+Known follow-ups, none blocking:
+- IAM group *policy documents* are resolved, but a group's own nested
+  memberships are not — IAM does not nest groups, so this is complete in
+  practice, noted only so it is not rediscovered as a gap.
+- No GitHub Actions workflow yet. `npm test` needs no services, so CI is a
+  short next step whenever it is wanted.
 ## Full 6-8 week phased plan
 See `cloudsentinel-project-plan.md` (already generated) for the complete
 week-by-week breakdown, resume bullet draft, and free-tools reference table.
