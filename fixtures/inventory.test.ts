@@ -260,6 +260,13 @@ describe("compliant controls", () => {
     assert.equal(bucket.config.versioning, "Enabled");
     assert.equal(bucket.config.policy, null);
 
+    // Logging is on and points at itself. The control group is only a useful
+    // baseline if it is clean under every rule, including the access-logging
+    // check — otherwise "the controls produce no findings" comes with an
+    // asterisk.
+    assert.equal(bucket.config.loggingEnabled, true);
+    assert.equal(bucket.config.loggingTargetBucket, "cloudsentinel-private-logs");
+
     // Not "no grants at all": every bucket ACL carries a FULL_CONTROL grant to
     // the bucket owner, which is ordinary and not a finding. What must be
     // absent is a grant to one of the two public groups.

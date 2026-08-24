@@ -1,5 +1,5 @@
 {
-  "collectedAt": "2026-08-24T17:04:13.049Z",
+  "collectedAt": "2026-08-24T17:14:40.299Z",
   "endpoint": "http://localhost:4566",
   "region": "us-east-1",
   "resources": [
@@ -13,10 +13,10 @@
         "ManagedBy": "seed-localstack",
         "Posture": "compliant-control"
       },
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
-        "createdAt": "2026-08-23T18:51:25.000Z",
+        "createdAt": "2026-08-24T17:07:06.000Z",
         "publicAccessBlock": {
           "blockPublicAcls": true,
           "ignorePublicAcls": true,
@@ -34,8 +34,8 @@
           }
         ],
         "versioning": "Enabled",
-        "loggingEnabled": false,
-        "loggingTargetBucket": null,
+        "loggingEnabled": true,
+        "loggingTargetBucket": "cloudsentinel-private-logs",
         "encryptionAlgorithm": "AES256"
       }
     },
@@ -49,10 +49,10 @@
         "ManagedBy": "seed-localstack",
         "Posture": "intentionally-insecure"
       },
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
-        "createdAt": "2026-08-23T18:51:24.000Z",
+        "createdAt": "2026-08-24T17:07:06.000Z",
         "publicAccessBlock": {
           "blockPublicAcls": false,
           "ignorePublicAcls": false,
@@ -93,7 +93,7 @@
       }
     },
     {
-      "id": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-2120e703584f389c9",
+      "id": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-7262afbbf214cd66b",
       "type": "security_group",
       "name": "cloudsentinel-open-mgmt",
       "region": "us-east-1",
@@ -101,10 +101,10 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
-        "groupId": "sg-2120e703584f389c9",
+        "groupId": "sg-7262afbbf214cd66b",
         "description": "CloudSentinel fixture: management ports open to the world",
         "vpcId": "vpc-a2e3e77033e3a4610",
         "ingressRules": [
@@ -154,7 +154,7 @@
       }
     },
     {
-      "id": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-6764d6fef2fcd1b05",
+      "id": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-15cd7c7f9a495381f",
       "type": "security_group",
       "name": "cloudsentinel-restricted-app",
       "region": "us-east-1",
@@ -162,10 +162,10 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
-        "groupId": "sg-6764d6fef2fcd1b05",
+        "groupId": "sg-15cd7c7f9a495381f",
         "description": "CloudSentinel fixture: HTTPS from the VPC range only",
         "vpcId": "vpc-a2e3e77033e3a4610",
         "ingressRules": [
@@ -204,7 +204,7 @@
       "name": "default",
       "region": "us-east-1",
       "tags": {},
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
         "groupId": "sg-9b83e8b19653b4290",
@@ -235,20 +235,20 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
         "userName": "cloudsentinel-admin-svc",
         "arn": "arn:aws:iam::000000000000:user/cloudsentinel-admin-svc",
-        "createdAt": "2026-08-23T18:51:25.120Z",
+        "createdAt": "2026-08-24T17:07:06.258Z",
         "passwordLastUsed": null,
         "hasConsoleAccess": true,
         "mfaDeviceIds": [],
         "accessKeys": [
           {
-            "accessKeyId": "LKIAQAAAAAAANDD6OT63",
+            "accessKeyId": "LKIAQAAAAAAAKY4M7MEN",
             "status": "Active",
-            "createdAt": "2026-08-23T18:51:25.167Z",
+            "createdAt": "2026-08-24T17:07:06.308Z",
             "ageInDays": 0
           }
         ],
@@ -301,12 +301,12 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
         "userName": "cloudsentinel-group-member",
         "arn": "arn:aws:iam::000000000000:user/cloudsentinel-group-member",
-        "createdAt": "2026-08-24T17:04:04.418Z",
+        "createdAt": "2026-08-24T17:07:06.335Z",
         "passwordLastUsed": null,
         "hasConsoleAccess": false,
         "mfaDeviceIds": [],
@@ -365,12 +365,12 @@
         "Project": "CloudSentinel",
         "ManagedBy": "seed-localstack"
       },
-      "collectedAt": "2026-08-24T17:04:13.049Z",
+      "collectedAt": "2026-08-24T17:14:40.299Z",
       "unobserved": [],
       "config": {
         "userName": "cloudsentinel-readonly-svc",
         "arn": "arn:aws:iam::000000000000:user/cloudsentinel-readonly-svc",
-        "createdAt": "2026-08-23T18:51:25.173Z",
+        "createdAt": "2026-08-24T17:07:06.348Z",
         "passwordLastUsed": null,
         "hasConsoleAccess": false,
         "mfaDeviceIds": [],

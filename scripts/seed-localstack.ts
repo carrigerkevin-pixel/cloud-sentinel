@@ -19,6 +19,7 @@ import {
   DeleteObjectsCommand,
   ListObjectVersionsCommand,
   PutBucketAclCommand,
+  PutBucketLoggingCommand,
   PutBucketOwnershipControlsCommand,
   PutBucketPolicyCommand,
   PutBucketTaggingCommand,
@@ -300,7 +301,35 @@ async function seedBuckets(): Promise<void> {
       VersioningConfiguration: { Status: "Enabled" },
     }),
   );
-  log.ok(`bucket ${COMPLIANT_BUCKET} (control: PAB on, versioning on)`);
+  // Access logging, pointed at this bucket itself.
+  //
+  // The control group only demonstrates a zero false-positive baseline if it
+  // is clean under *every* rule, and without this the CIS access-logging check
+  // would fire on the one bucket that is supposed to be exemplary. Seeding a
+  // separate destination bucket would not fix it — that bucket would have no
+  // logging either, and so on. A bucket whose entire purpose is holding logs
+  // is a legitimate target for its own access logs, which ends the regress.
+  //
+  // Real AWS additionally requires the target bucket to grant write access to
+  // the log delivery group (or an equivalent bucket policy under
+  // bucket-owner-enforced ownership). LocalStack does not enforce it, and
+  // granting it here would add a permission the fixture does not otherwise
+  // need, so it is deliberately left out.
+  await s3.send(
+    new PutBucketLoggingCommand({
+      Bucket: COMPLIANT_BUCKET,
+      BucketLoggingStatus: {
+        LoggingEnabled: {
+          TargetBucket: COMPLIANT_BUCKET,
+          TargetPrefix: "access-logs/",
+        },
+      },
+    }),
+  );
+
+  log.ok(
+    `bucket ${COMPLIANT_BUCKET} (control: PAB on, versioning on, logging on)`,
+  );
 }
 
 async function destroyBuckets(): Promise<void> {
