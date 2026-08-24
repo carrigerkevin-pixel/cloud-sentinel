@@ -196,8 +196,10 @@ async function optional<T>(options: OptionalCallOptions<T>): Promise<T | null> {
  *
  * @returns The parsed document, or `null` if it could not be parsed by either
  *          route. Null means "not evaluated" — a rule must not read it as safe.
+ *
+ * Exported for tests rather than as public API.
  */
-function parsePolicyDocument(raw: string): PolicyDocument | null {
+export function parsePolicyDocument(raw: string): PolicyDocument | null {
   const attempts = [raw];
   try {
     attempts.push(decodeURIComponent(raw));
@@ -234,8 +236,10 @@ function parsePolicyDocument(raw: string): PolicyDocument | null {
  * days" finding would appear on a scan taken when the key was 30 days old,
  * simply because the report was opened three months later. A scan should mean
  * what it meant when it ran.
+ *
+ * Exported for tests rather than as public API.
  */
-function ageInDays(createdAt: Date | undefined, now: Date): number | null {
+export function ageInDays(createdAt: Date | undefined, now: Date): number | null {
   if (!createdAt) return null;
   const millis = now.getTime() - createdAt.getTime();
   return Math.floor(millis / 86_400_000);

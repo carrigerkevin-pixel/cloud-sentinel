@@ -11,7 +11,8 @@
     "seed": "node scripts/seed-localstack.ts",
     "seed:down": "node scripts/seed-localstack.ts --teardown",
     "seed:list": "node scripts/seed-localstack.ts --list",
-    "collect": "node scripts/collect.ts"
+    "collect": "node scripts/collect.ts",
+    "test": "node --test \"lib/**/*.test.ts\" \"fixtures/**/*.test.ts\""
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1116.0",

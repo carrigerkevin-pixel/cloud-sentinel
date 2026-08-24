@@ -90,8 +90,10 @@ function errorMessage(error: unknown): string {
  * separately from CIDRs because they are generally the *desirable* pattern:
  * traffic scoped to peer instances rather than to an IP range. Rules should not
  * treat them the way they treat `0.0.0.0/0`.
+ *
+ * Exported for tests rather than as public API.
  */
-function normalizeRules(permissions: IpPermission[]): SecurityGroupRule[] {
+export function normalizeRules(permissions: IpPermission[]): SecurityGroupRule[] {
   return permissions.map((permission) => {
     const descriptions: string[] = [];
     for (const range of permission.IpRanges ?? []) {

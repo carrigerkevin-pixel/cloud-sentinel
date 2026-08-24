@@ -196,8 +196,11 @@ async function readSetting<T>(options: ReadSettingOptions<T>): Promise<T | null>
  * @returns The parsed document, or `null` if the text is not valid JSON. A
  *          parse failure is deliberately not fatal — `policyRaw` still carries
  *          the original text so the problem can be diagnosed from the report.
+ *
+ * Exported for tests rather than as public API — nothing outside this module
+ * should be parsing bucket policies.
  */
-function parsePolicyDocument(raw: string): PolicyDocument | null {
+export function parsePolicyDocument(raw: string): PolicyDocument | null {
   try {
     const parsed = JSON.parse(raw) as {
       Version?: string;
@@ -222,8 +225,10 @@ function parsePolicyDocument(raw: string): PolicyDocument | null {
  * world-accessible no matter how restrictive the bucket policy is. The URI is
  * preserved verbatim in `granteeId` so the rule engine can match on it — this
  * function classifies, it does not judge.
+ *
+ * Exported for tests rather than as public API.
  */
-function normalizeAclGrants(
+export function normalizeAclGrants(
   grants: Array<{
     Grantee?: {
       Type?: string;
