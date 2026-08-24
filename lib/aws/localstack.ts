@@ -114,6 +114,22 @@ function baseConfig() {
     endpoint,
     region: AWS_REGION,
     credentials: LOCALSTACK_CREDENTIALS,
+
+    // Retry tuning for bulk scanning.
+    //
+    // The SDK retries throttled and transient requests on its own; these
+    // settings change how. "adaptive" adds a client-side rate limiter that
+    // detects throttling responses and slows the whole client down, rather
+    // than letting each request independently back off and retry into the same
+    // wall. That is the right shape for a collector, which issues many small
+    // reads in bursts and cares far more about completing than about latency.
+    //
+    // Raising maxAttempts from the default 3 to 5 follows from the same logic:
+    // an audit that gives up on a resource leaves a hole in its own report, and
+    // a hole is worse than a slow scan. Against LocalStack neither setting has
+    // any visible effect — this is here for the real-account case.
+    retryMode: "adaptive",
+    maxAttempts: 5,
   };
 }
 

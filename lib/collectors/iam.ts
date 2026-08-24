@@ -60,6 +60,10 @@ import {
 } from "@aws-sdk/client-iam";
 
 import { createIAMClient } from "../aws/localstack.ts";
+import {
+  collectorConcurrency,
+  mapWithConcurrency,
+} from "../util/concurrency.ts";
 import type {
   AccessKeySummary,
   AttachedPolicySummary,
@@ -690,10 +694,14 @@ export async function collectIamUsers(
         typeof user.UserName === "string" && typeof user.Arn === "string",
     );
 
-    // Users on a page are collected concurrently; pages are walked in sequence
-    // because each marker is only known once the previous page returns.
-    const collected = await Promise.all(
-      users.map((user) =>
+    // Users on a page are collected concurrently, up to the configured cap;
+    // pages are walked in sequence because each marker is only known once the
+    // previous page returns. A user costs seven or more API calls, so the cap
+    // matters more here than anywhere else in the collector.
+    const collected = await mapWithConcurrency(
+      users,
+      collectorConcurrency(),
+      (user) =>
         collectUser(
           client,
           user,
@@ -703,7 +711,6 @@ export async function collectIamUsers(
           policyCache,
           groupCache,
         ),
-      ),
     );
     resources.push(...collected);
 

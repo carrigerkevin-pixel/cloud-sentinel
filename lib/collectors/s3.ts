@@ -47,6 +47,10 @@ import {
 } from "@aws-sdk/client-s3";
 
 import { AWS_REGION, createS3Client } from "../aws/localstack.ts";
+import {
+  collectorConcurrency,
+  mapWithConcurrency,
+} from "../util/concurrency.ts";
 import type {
   BucketAclGrant,
   CollectionError,
@@ -513,8 +517,13 @@ export async function collectS3Buckets(
       typeof bucket.Name === "string",
   );
 
-  const resources = await Promise.all(
-    buckets.map((bucket) =>
+  // Capped rather than all-at-once: each bucket fans out to eight detail
+  // calls, so an uncapped map over a large account would put thousands of
+  // requests in flight simultaneously.
+  const resources = await mapWithConcurrency(
+    buckets,
+    collectorConcurrency(),
+    (bucket) =>
       collectBucket(
         client,
         bucket.Name,
@@ -522,7 +531,6 @@ export async function collectS3Buckets(
         collectedAt,
         errors,
       ),
-    ),
   );
 
   // Stable ordering so two scans of an unchanged environment produce identical
