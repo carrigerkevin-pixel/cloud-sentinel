@@ -205,6 +205,12 @@ export async function collectSecurityGroups(
         region: AWS_REGION,
         tags: normalizeTags(group.Tags ?? []),
         collectedAt,
+        // Always empty for security groups: DescribeSecurityGroups returns a
+        // group complete in one response, so there is no per-setting call that
+        // can fail on its own. Either the whole group was read or the group is
+        // not in the inventory at all, and the list failure is recorded in
+        // `errors` instead.
+        unobserved: [],
         config: {
           groupId: group.GroupId,
           description: group.Description ?? "",

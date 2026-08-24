@@ -74,29 +74,30 @@ export interface S3CollectionResult {
 }
 
 /**
- * AWS error codes that mean "this feature is simply not configured on this
- * bucket", per API.
+ * AWS error codes that genuinely mean "this feature is not configured on this
+ * bucket", listed per API.
  *
- * These are grouped by call rather than lumped into one list so that an
+ * They are grouped by call rather than pooled into one list so that an
  * unexpected code from one API cannot be swallowed by another API's allowance.
- * `NotImplemented` and `MethodNotAllowed` appear in several entries because
- * LocalStack's free tier does not emulate every S3 sub-API; when that happens
- * the honest result is `null` ("we could not observe this") rather than a
- * fabricated default.
+ *
+ * `NotImplemented` and `MethodNotAllowed` are deliberately **not** in any of
+ * these lists, though an earlier version of this file had them in several.
+ * Those codes mean the endpoint does not emulate the API — LocalStack's
+ * coverage is not complete — which is a failure to observe, not an observation
+ * that the setting is off. Tolerating them manufactured findings out of gaps in
+ * the emulator: a bucket whose encryption could not be checked was reported
+ * exactly like a bucket with no encryption. They now fall through to the
+ * unexpected-error path, which records the field as unobserved so a rule
+ * reports it inconclusive instead.
  */
 const ABSENT_CODES = {
-  publicAccessBlock: [
-    "NoSuchPublicAccessBlockConfiguration",
-    "NotImplemented",
-  ],
-  policy: ["NoSuchBucketPolicy", "NotImplemented"],
-  acl: ["AccessControlListNotSupported", "NotImplemented", "MethodNotAllowed"],
-  encryption: [
-    "ServerSideEncryptionConfigurationNotFoundError",
-    "NotImplemented",
-  ],
-  tagging: ["NoSuchTagSet", "NoSuchTagSetError", "NotImplemented"],
-  location: ["NotImplemented"],
+  publicAccessBlock: ["NoSuchPublicAccessBlockConfiguration"],
+  policy: ["NoSuchBucketPolicy"],
+  acl: ["AccessControlListNotSupported"],
+  encryption: ["ServerSideEncryptionConfigurationNotFoundError"],
+  tagging: ["NoSuchTagSet", "NoSuchTagSetError"],
+  // GetBucketLocation has no "absent" case: every bucket has a location.
+  location: [],
 } as const;
 
 /**
@@ -118,40 +119,58 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * Everything {@link readSetting} needs. Passed as an object rather than as
+ * positional arguments because there are six of them and call sites reading
+ * `(codes, "GetBucketAcl", bucket, errors, unobserved, fn)` are impossible to
+ * check at a glance.
+ */
+interface ReadSettingOptions<T> {
+  /** The `S3BucketConfig` field this call populates, e.g. `"publicAccessBlock"`. */
+  field: string;
+  /** API name, e.g. `"GetBucketPolicy"`, recorded on any error. */
+  operation: string;
+  /** Codes meaning the setting is genuinely absent. */
+  absentCodes: readonly string[];
+  bucket: string;
+  /** Sink for unexpected failures. */
+  errors: CollectionError[];
+  /** Sink for the names of fields that could not be read. */
+  unobserved: string[];
+  call: () => Promise<T>;
+}
+
+/**
  * Runs one AWS call, distinguishing "not configured" from "went wrong".
  *
- * @param absentCodes  Error codes that mean the feature is absent; these
- *                     resolve to `null`.
- * @param operation    API name, recorded on the error so a report can say
- *                     which call failed rather than just "S3 failed".
- * @param bucket       Bucket the call was about, for the same reason.
- * @param errors       Sink that unexpected failures are appended to. Mutated
- *                     rather than returned so the caller can collect across
- *                     many calls without threading a result type through
- *                     every line.
- * @param call         The call itself.
- * @returns The call's value, or `null` if the feature is absent **or** if the
- *          call failed. Both collapse to `null`, so the caller must consult
- *          `errors` to tell a real absence from a failed observation — see the
- *          note on `AttachedPolicySummary.document` in lib/types/resource.ts
- *          for why that distinction matters to a rule.
+ * Both outcomes return `null`, because the config field has no value either
+ * way — but they are recorded differently, and that difference is the whole
+ * point:
+ *
+ *   - An `absentCodes` match is a real observation. The setting is off. The
+ *     field is *not* added to `unobserved`, and a rule may safely conclude
+ *     from it.
+ *   - Any other failure means the setting was never seen. The field name goes
+ *     into `unobserved` and the error into `errors`, and a rule must report
+ *     inconclusive rather than clean.
+ *
+ * The sinks are mutated rather than returned so a caller can fire a dozen of
+ * these concurrently without threading a result type through every line.
+ *
+ * @returns The call's value, or `null` if the setting is absent or unreadable.
  */
-async function absentAsNull<T>(
-  absentCodes: readonly string[],
-  operation: string,
-  bucket: string,
-  errors: CollectionError[],
-  call: () => Promise<T>,
-): Promise<T | null> {
+async function readSetting<T>(options: ReadSettingOptions<T>): Promise<T | null> {
   try {
-    return await call();
+    return await options.call();
   } catch (error) {
-    if (absentCodes.includes(awsErrorCode(error))) return null;
-    errors.push({
+    const code = awsErrorCode(error);
+    if (options.absentCodes.includes(code)) return null;
+
+    options.unobserved.push(options.field);
+    options.errors.push({
       resourceType: "s3_bucket",
-      resourceName: bucket,
-      operation,
-      message: `${awsErrorCode(error) || "Error"}: ${errorMessage(error)}`,
+      resourceName: options.bucket,
+      operation: options.operation,
+      message: `${code || "Error"}: ${errorMessage(error)}`,
     });
     return null;
   }
@@ -274,6 +293,10 @@ async function collectBucket(
   collectedAt: string,
   errors: CollectionError[],
 ): Promise<S3BucketResource> {
+  // Names of the config fields this bucket's scan could not read. Handed to
+  // every readSetting call below, and copied onto the resource at the end.
+  const unobserved: string[] = [];
+
   const [
     publicAccessBlock,
     policyResponse,
@@ -284,46 +307,82 @@ async function collectBucket(
     taggingResponse,
     locationResponse,
   ] = await Promise.all([
-    absentAsNull(
-      ABSENT_CODES.publicAccessBlock,
-      "GetPublicAccessBlock",
-      bucketName,
+    readSetting({
+      field: "publicAccessBlock",
+      operation: "GetPublicAccessBlock",
+      absentCodes: ABSENT_CODES.publicAccessBlock,
+      bucket: bucketName,
       errors,
-      () => s3.send(new GetPublicAccessBlockCommand({ Bucket: bucketName })),
-    ),
-    absentAsNull(ABSENT_CODES.policy, "GetBucketPolicy", bucketName, errors, () =>
-      s3.send(new GetBucketPolicyCommand({ Bucket: bucketName })),
-    ),
-    absentAsNull(ABSENT_CODES.acl, "GetBucketAcl", bucketName, errors, () =>
-      s3.send(new GetBucketAclCommand({ Bucket: bucketName })),
-    ),
+      unobserved,
+      call: () => s3.send(new GetPublicAccessBlockCommand({ Bucket: bucketName })),
+    }),
+    readSetting({
+      field: "policy",
+      operation: "GetBucketPolicy",
+      absentCodes: ABSENT_CODES.policy,
+      bucket: bucketName,
+      errors,
+      unobserved,
+      call: () => s3.send(new GetBucketPolicyCommand({ Bucket: bucketName })),
+    }),
+    readSetting({
+      field: "aclGrants",
+      operation: "GetBucketAcl",
+      absentCodes: ABSENT_CODES.acl,
+      bucket: bucketName,
+      errors,
+      unobserved,
+      call: () => s3.send(new GetBucketAclCommand({ Bucket: bucketName })),
+    }),
     // Versioning has no "absent" error: AWS returns 200 with an empty body for
-    // a bucket that never had versioning enabled, so the only codes tolerated
-    // are none at all.
-    absentAsNull([], "GetBucketVersioning", bucketName, errors, () =>
-      s3.send(new GetBucketVersioningCommand({ Bucket: bucketName })),
-    ),
+    // a bucket that never had versioning enabled, so no codes are tolerated and
+    // any failure at all marks the field unobserved.
+    readSetting({
+      field: "versioning",
+      operation: "GetBucketVersioning",
+      absentCodes: [],
+      bucket: bucketName,
+      errors,
+      unobserved,
+      call: () => s3.send(new GetBucketVersioningCommand({ Bucket: bucketName })),
+    }),
     // Logging behaves the same way — 200 with no `LoggingEnabled` key.
-    absentAsNull([], "GetBucketLogging", bucketName, errors, () =>
-      s3.send(new GetBucketLoggingCommand({ Bucket: bucketName })),
-    ),
-    absentAsNull(
-      ABSENT_CODES.encryption,
-      "GetBucketEncryption",
-      bucketName,
+    readSetting({
+      field: "loggingEnabled",
+      operation: "GetBucketLogging",
+      absentCodes: [],
+      bucket: bucketName,
       errors,
-      () => s3.send(new GetBucketEncryptionCommand({ Bucket: bucketName })),
-    ),
-    absentAsNull(ABSENT_CODES.tagging, "GetBucketTagging", bucketName, errors, () =>
-      s3.send(new GetBucketTaggingCommand({ Bucket: bucketName })),
-    ),
-    absentAsNull(
-      ABSENT_CODES.location,
-      "GetBucketLocation",
-      bucketName,
+      unobserved,
+      call: () => s3.send(new GetBucketLoggingCommand({ Bucket: bucketName })),
+    }),
+    readSetting({
+      field: "encryptionAlgorithm",
+      operation: "GetBucketEncryption",
+      absentCodes: ABSENT_CODES.encryption,
+      bucket: bucketName,
       errors,
-      () => s3.send(new GetBucketLocationCommand({ Bucket: bucketName })),
-    ),
+      unobserved,
+      call: () => s3.send(new GetBucketEncryptionCommand({ Bucket: bucketName })),
+    }),
+    readSetting({
+      field: "tags",
+      operation: "GetBucketTagging",
+      absentCodes: ABSENT_CODES.tagging,
+      bucket: bucketName,
+      errors,
+      unobserved,
+      call: () => s3.send(new GetBucketTaggingCommand({ Bucket: bucketName })),
+    }),
+    readSetting({
+      field: "region",
+      operation: "GetBucketLocation",
+      absentCodes: ABSENT_CODES.location,
+      bucket: bucketName,
+      errors,
+      unobserved,
+      call: () => s3.send(new GetBucketLocationCommand({ Bucket: bucketName })),
+    }),
   ]);
 
   // --- Block Public Access -------------------------------------------------
@@ -399,6 +458,7 @@ async function collectBucket(
     region,
     tags: normalizeTags(taggingResponse?.TagSet ?? []),
     collectedAt,
+    unobserved,
     config,
   };
 }

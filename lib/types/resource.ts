@@ -168,6 +168,32 @@ interface ResourceBase {
    * needs a "when" to be actionable.
    */
   collectedAt: string;
+
+  /**
+   * Names of `config` fields this scan could not read. Empty when everything
+   * was observed successfully.
+   *
+   * This exists because a `null` config field is ambiguous on its own: it can
+   * mean "AWS says this is not configured" (a fact, and often the finding
+   * itself) or "the call to find out failed" (no information at all). Those
+   * demand opposite responses from a rule, and collapsing them is how a
+   * security scanner ends up reporting a confident "no problems found" about a
+   * resource it never actually managed to inspect.
+   *
+   * The contract for rules: check this list before drawing any conclusion from
+   * a `null`. If the field is named here the honest verdict is *inconclusive*,
+   * never *compliant*.
+   *
+   *     if (bucket.unobserved.includes("publicAccessBlock")) return inconclusive();
+   *     if (bucket.config.publicAccessBlock === null) return finding();
+   *
+   * Field names are plain strings rather than a typed key union, which is the
+   * acknowledged weakness of this approach — the compiler cannot catch a typo
+   * in the name. That was accepted deliberately in exchange for keeping every
+   * config field directly readable instead of wrapping each one in a
+   * three-state container.
+   */
+  unobserved: string[];
 }
 
 // ---------------------------------------------------------------------------

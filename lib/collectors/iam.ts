@@ -116,36 +116,51 @@ const NOT_FOUND_CODES = [
   "NotFoundException",
 ];
 
+/** Everything {@link optional} needs, as an object for legible call sites. */
+interface OptionalCallOptions<T> {
+  /** The `IamUserConfig` field this call populates, e.g. `"accessKeys"`. */
+  field: string;
+  operation: string;
+  userName: string | null;
+  errors: CollectionError[];
+  /** Sink for the names of fields that could not be read. */
+  unobserved: string[];
+  call: () => Promise<T>;
+}
+
 /**
  * Runs one IAM call, treating "does not exist" as a `null` answer and anything
- * else as a recorded failure.
+ * else as an unobserved field.
  *
- * Mirrors `absentAsNull` in the S3 collector; kept as a separate local function
- * because the tolerated codes and the `resourceType` on the error differ, and a
- * shared abstraction across both would need more configuration than it saves.
+ * Mirrors `readSetting` in the S3 collector; kept separate because the
+ * tolerated codes and the `resourceType` on the error differ, and sharing them
+ * would take more configuration than it saves.
  *
- * @param errors Sink that unexpected failures are appended to. Mutated rather
- *               than returned so a long chain of calls does not have to thread
- *               a result type through every line.
+ * The distinction it preserves matters most for `GetLoginProfile`. A
+ * `NoSuchEntity` there is the ordinary way AWS says "this user has no console
+ * password", and it correctly yields `hasConsoleAccess: false`. But any *other*
+ * failure would also have produced `false` under the previous version of this
+ * code — silently claiming a user cannot sign in when we simply failed to ask.
+ * That turned a swallowed error into a missed missing-MFA finding, which is the
+ * worst kind of bug for a security tool: a false negative you cannot see.
+ *
  * @returns The call's value, `null` if the entity does not exist, and also
- *          `null` if the call failed. As in the S3 collector, the caller must
- *          consult `errors` to tell a real absence from a failed observation.
+ *          `null` if the call failed — with the field named in `unobserved` in
+ *          that second case, so a rule can tell the two apart.
  */
-async function optional<T>(
-  operation: string,
-  userName: string | null,
-  errors: CollectionError[],
-  call: () => Promise<T>,
-): Promise<T | null> {
+async function optional<T>(options: OptionalCallOptions<T>): Promise<T | null> {
   try {
-    return await call();
+    return await options.call();
   } catch (error) {
-    if (NOT_FOUND_CODES.includes(awsErrorCode(error))) return null;
-    errors.push({
+    const code = awsErrorCode(error);
+    if (NOT_FOUND_CODES.includes(code)) return null;
+
+    options.unobserved.push(options.field);
+    options.errors.push({
       resourceType: "iam_user",
-      resourceName: userName,
-      operation,
-      message: `${awsErrorCode(error) || "Error"}: ${errorMessage(error)}`,
+      resourceName: options.userName,
+      operation: options.operation,
+      message: `${code || "Error"}: ${errorMessage(error)}`,
     });
     return null;
   }
@@ -245,25 +260,37 @@ async function resolveManagedPolicy(
   policyArn: string,
   userName: string,
   errors: CollectionError[],
+  unobserved: string[],
   cache: Map<string, PolicyDocument | null>,
 ): Promise<PolicyDocument | null> {
   const cached = cache.get(policyArn);
   if (cached !== undefined) return cached;
 
-  const policy = await optional("GetPolicy", userName, errors, () =>
-    iam.send(new GetPolicyCommand({ PolicyArn: policyArn })),
-  );
+  const policy = await optional({
+    field: "attachedPolicies",
+    operation: "GetPolicy",
+    userName,
+    errors,
+    unobserved,
+    call: () => iam.send(new GetPolicyCommand({ PolicyArn: policyArn })),
+  });
   const versionId = policy?.Policy?.DefaultVersionId;
   if (!versionId) {
     cache.set(policyArn, null);
     return null;
   }
 
-  const version = await optional("GetPolicyVersion", userName, errors, () =>
-    iam.send(
-      new GetPolicyVersionCommand({ PolicyArn: policyArn, VersionId: versionId }),
-    ),
-  );
+  const version = await optional({
+    field: "attachedPolicies",
+    operation: "GetPolicyVersion",
+    userName,
+    errors,
+    unobserved,
+    call: () =>
+      iam.send(
+        new GetPolicyVersionCommand({ PolicyArn: policyArn, VersionId: versionId }),
+      ),
+  });
   const raw = version?.PolicyVersion?.Document;
   const document = raw ? parsePolicyDocument(raw) : null;
 
@@ -296,6 +323,9 @@ async function collectUser(
 ): Promise<IamUserResource> {
   const userName = user.UserName;
 
+  // Names of the config fields this user's scan could not read.
+  const unobserved: string[] = [];
+
   const [
     attachedResponse,
     inlineResponse,
@@ -305,33 +335,71 @@ async function collectUser(
     tagsResponse,
     loginProfile,
   ] = await Promise.all([
-    optional("ListAttachedUserPolicies", userName, errors, () =>
-      iam.send(new ListAttachedUserPoliciesCommand({ UserName: userName })),
-    ),
-    optional("ListUserPolicies", userName, errors, () =>
-      iam.send(new ListUserPoliciesCommand({ UserName: userName })),
-    ),
-    optional("ListMFADevices", userName, errors, () =>
-      iam.send(new ListMFADevicesCommand({ UserName: userName })),
-    ),
-    optional("ListAccessKeys", userName, errors, () =>
-      iam.send(new ListAccessKeysCommand({ UserName: userName })),
-    ),
-    optional("ListGroupsForUser", userName, errors, () =>
-      iam.send(new ListGroupsForUserCommand({ UserName: userName })),
-    ),
+    optional({
+      field: "attachedPolicies",
+      operation: "ListAttachedUserPolicies",
+      userName,
+      errors,
+      unobserved,
+      call: () =>
+        iam.send(new ListAttachedUserPoliciesCommand({ UserName: userName })),
+    }),
+    optional({
+      field: "inlinePolicies",
+      operation: "ListUserPolicies",
+      userName,
+      errors,
+      unobserved,
+      call: () => iam.send(new ListUserPoliciesCommand({ UserName: userName })),
+    }),
+    optional({
+      field: "mfaDeviceIds",
+      operation: "ListMFADevices",
+      userName,
+      errors,
+      unobserved,
+      call: () => iam.send(new ListMFADevicesCommand({ UserName: userName })),
+    }),
+    optional({
+      field: "accessKeys",
+      operation: "ListAccessKeys",
+      userName,
+      errors,
+      unobserved,
+      call: () => iam.send(new ListAccessKeysCommand({ UserName: userName })),
+    }),
+    optional({
+      field: "groupNames",
+      operation: "ListGroupsForUser",
+      userName,
+      errors,
+      unobserved,
+      call: () => iam.send(new ListGroupsForUserCommand({ UserName: userName })),
+    }),
     // ListUsers does not include tags, unlike most AWS list APIs, so tags need
     // their own call.
-    optional("ListUserTags", userName, errors, () =>
-      iam.send(new ListUserTagsCommand({ UserName: userName })),
-    ),
+    optional({
+      field: "tags",
+      operation: "ListUserTags",
+      userName,
+      errors,
+      unobserved,
+      call: () => iam.send(new ListUserTagsCommand({ UserName: userName })),
+    }),
     // A `NoSuchEntity` here is the normal, expected result for any user without
-    // console access, and `optional` turns it into null. That null is what
-    // makes the missing-MFA rule precise: demanding MFA of a service account
-    // that has no password to protect would be a false positive.
-    optional("GetLoginProfile", userName, errors, () =>
-      iam.send(new GetLoginProfileCommand({ UserName: userName })),
-    ),
+    // console access, and `optional` turns it into null without marking the
+    // field unobserved. That null is what makes the missing-MFA rule precise:
+    // demanding MFA of a service account with no password to protect would be
+    // a false positive. Any other failure *does* mark `hasConsoleAccess`
+    // unobserved — see the note on `optional`.
+    optional({
+      field: "hasConsoleAccess",
+      operation: "GetLoginProfile",
+      userName,
+      errors,
+      unobserved,
+      call: () => iam.send(new GetLoginProfileCommand({ UserName: userName })),
+    }),
   ]);
 
   // --- Managed policies ----------------------------------------------------
@@ -350,6 +418,7 @@ async function collectUser(
           policy.PolicyArn,
           userName,
           errors,
+          unobserved,
           policyCache,
         ),
       })),
@@ -361,11 +430,17 @@ async function collectUser(
   // hiding place for over-broad grants. Each name needs its own GetUserPolicy.
   const inlinePolicies: InlinePolicySummary[] = await Promise.all(
     (inlineResponse?.PolicyNames ?? []).map(async (policyName) => {
-      const response = await optional("GetUserPolicy", userName, errors, () =>
-        iam.send(
-          new GetUserPolicyCommand({ UserName: userName, PolicyName: policyName }),
-        ),
-      );
+      const response = await optional({
+        field: "inlinePolicies",
+        operation: "GetUserPolicy",
+        userName,
+        errors,
+        unobserved,
+        call: () =>
+          iam.send(
+            new GetUserPolicyCommand({ UserName: userName, PolicyName: policyName }),
+          ),
+      });
       const raw = response?.PolicyDocument;
       return {
         policyName,
@@ -399,6 +474,9 @@ async function collectUser(
     region: IAM_REGION,
     tags,
     collectedAt,
+    // De-duplicated: several calls map to the same config field, so a user
+    // whose managed-policy lookup failed twice should name the field once.
+    unobserved: [...new Set(unobserved)],
     config: {
       userName,
       arn: user.Arn,
