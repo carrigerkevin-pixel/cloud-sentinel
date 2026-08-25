@@ -22,13 +22,14 @@ LocalStack ──▶ collectors ──▶ ResourceInventory ──▶ rule engin
 | 2 — Collector service | ✅ complete |
 | 3 — Rule engine | ✅ complete |
 | CI (GitHub Actions) | ✅ complete |
-| 4 — Postgres schema | planned |
+| 4 — Postgres persistence | ✅ complete |
 | 5 — Next.js dashboard + API | planned |
 | 6 — ML anomaly layer | planned |
 | 7 — Docker + Kubernetes | planned |
 
-**207 tests**, run on Node's built-in test runner. No test framework dependency, and
-no Docker, LocalStack, or AWS credentials are needed to run them.
+**226 tests** on Node's built-in test runner — no test framework dependency, and no
+Docker, LocalStack, or AWS credentials needed. A further **12 integration tests**
+(`npm run test:db`) run against a real Postgres.
 
 ---
 
@@ -47,6 +48,12 @@ npm run scan:fixture
 npm run seed        # provision the fixtures
 npm run collect     # read the environment
 npm run scan        # evaluate the rules
+
+# Store scan history, so findings gain first-seen dates and lifecycle
+cp .env.example .env      # then set POSTGRES_PASSWORD — see that file
+docker compose up -d db
+npm run db:migrate
+npm run scan -- --save
 ```
 
 ---
@@ -101,6 +108,23 @@ npm run scan -- --json --out findings.json          # machine-readable output
 Exit status: `0` clean, `1` threshold tripped or the inventory had collection errors,
 `2` bad arguments.
 
+### `npm run db:migrate` — scan history
+
+Postgres stores scan history and finding lifecycle. `--save` on a scan writes it and
+updates what is new, still open, reopened, or resolved.
+
+```bash
+docker compose up -d db     # Postgres 17, bound to 127.0.0.1 only
+npm run db:migrate          # apply the schema
+npm run db:status           # what is applied, pending, or modified
+npm run scan -- --save      # store a scan
+npm run test:db             # integration tests (creates its own database)
+```
+
+The database has **no default password**: Compose refuses to start until
+`POSTGRES_PASSWORD` is set in `.env`. That file is gitignored; `.env.example` is
+committed and carries no values.
+
 ---
 
 ## Rule catalogue
@@ -145,8 +169,16 @@ operation than fixing one user.
 
 **Findings have deterministic ids.** `<ruleId>|<resourceId>|<key>`, where the key is
 derived from configuration rather than array position. Re-scanning an unchanged
-environment produces identical ids, which is what will let the dashboard track a
-finding's lifecycle instead of inventing a fresh set of problems on every run.
+environment produces identical ids, which is what lets the database track a finding's
+lifecycle instead of inventing a fresh set of problems on every run.
+
+**Absence is never treated as proof of a fix.** The tempting implementation of
+lifecycle is "any stored finding missing from this scan is resolved". That is wrong in
+the dangerous direction — it silently closes real problems and reports success for work
+nobody did. A finding is resolved only if the scan had no collection errors *and*
+either the resource is gone (`resource_removed`) or the resource was inspected and the
+rule stayed quiet (`fixed`). Anything else stays open and is reported as "could not be
+re-checked". A scan that fails halfway resolves nothing at all.
 
 **False positives are treated as a real cost.** Public web ports open to `0.0.0.0/0` are
 not flagged — that is the intended configuration for most internet-facing fleets.
@@ -174,11 +206,20 @@ lib/
     policy.ts             shared IAM/S3 policy analysis
     s3.ts ec2.ts iam.ts   the 12 rules
     engine.ts             the runner, finding ids, risk score
+  db/
+    client.ts             pooled connections, loopback-only by default
+    migrate.ts            numbered, checksummed migrations
+    lifecycle.ts          finding lifecycle rules (pure, no SQL)
+    scans.ts              persistence and history queries
   util/concurrency.ts     bounded parallelism
+  util/env.ts             .env loading
+db/migrations/            the schema, append-only
 scripts/
   seed-localstack.ts      npm run seed
   collect.ts              npm run collect
   scan.ts                 npm run scan
+  db.ts                   npm run db:migrate / db:status
+docker-compose.yml        local Postgres
 fixtures/inventory.json   committed snapshot, so everything above is testable offline
 ```
 
