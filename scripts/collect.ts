@@ -30,14 +30,8 @@
 
 import { writeFile } from "node:fs/promises";
 
-import {
-  AWS_REGION,
-  LOCALSTACK_ENDPOINT,
-  assertLocalStackReachable,
-} from "../lib/aws/localstack.ts";
-import { collectSecurityGroups } from "../lib/collectors/ec2.ts";
-import { collectIamUsers } from "../lib/collectors/iam.ts";
-import { collectS3Buckets } from "../lib/collectors/s3.ts";
+import { AWS_REGION, LOCALSTACK_ENDPOINT } from "../lib/aws/localstack.ts";
+import { collectInventory } from "../lib/collectors/inventory.ts";
 import type { Resource, ResourceInventory } from "../lib/types/resource.ts";
 
 // ---------------------------------------------------------------------------
@@ -242,37 +236,11 @@ async function main(): Promise<void> {
     );
   }
 
-  // Fail fast with one clear message if the container is not up, rather than
-  // letting three collectors each produce their own connection stack trace.
-  await assertLocalStackReachable();
-
-  // One timestamp for the entire scan. Generated here and passed down rather
-  // than defaulted inside each collector, because three separately-generated
-  // timestamps would make a single snapshot look like three different readings
-  // — and any later "what changed between scans" comparison depends on a scan
-  // having exactly one time.
-  const collectedAt = new Date().toISOString();
-
-  // The three services are unrelated, so their collectors run concurrently.
-  const [s3Result, ec2Result, iamResult] = await Promise.all([
-    collectS3Buckets(collectedAt),
-    collectSecurityGroups(collectedAt),
-    collectIamUsers(collectedAt),
-  ]);
-
-  const inventory: ResourceInventory = {
-    collectedAt,
-    // Recorded so a saved inventory can never be mistaken for one taken from a
-    // different environment — an inventory file outlives the shell that made it.
-    endpoint: LOCALSTACK_ENDPOINT,
-    region: AWS_REGION,
-    resources: [
-      ...s3Result.resources,
-      ...ec2Result.resources,
-      ...iamResult.resources,
-    ],
-    errors: [...s3Result.errors, ...ec2Result.errors, ...iamResult.errors],
-  };
+  // Assembly (including the LocalStack reachability check and the single shared
+  // timestamp) lives in lib/collectors/inventory.ts so that this CLI and
+  // scripts/scan.ts collect exactly the same thing.
+  const inventory: ResourceInventory = await collectInventory();
+  const { collectedAt } = inventory;
 
   if (outPath) {
     await writeFile(outPath, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
