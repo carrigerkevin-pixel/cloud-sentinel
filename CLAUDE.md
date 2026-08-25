@@ -162,6 +162,44 @@ design decision in this project in an internship interview.
 ✅ `.github/workflows/ci.yml` — runs on push and PR to `main`: type-check,
    lint, full test suite, and a scanner run against the committed fixture.
    No secrets, `permissions: contents: read` only.
+
+### Phase 4 complete — Postgres persistence
+✅ `docker-compose.yml` — Postgres 17 container. Bound to `127.0.0.1` only, no
+   default password (Compose aborts if `POSTGRES_PASSWORD` is unset), named
+   volume so scan history survives a restart. `.env.example` is committed and
+   carries no values; `.env` is gitignored.
+✅ `db/migrations/0001_init.sql` — four tables. The design decision that matters:
+   `findings` holds **one row per distinct problem** keyed by the engine's
+   deterministic id, carrying `first_seen_at` / `last_seen_at` / `status`, while
+   `finding_occurrences` records what each individual scan saw. That split is
+   what makes "public since the 4th of August" answerable. A CHECK constraint
+   enforces that a resolved finding has both a date and a reason, and an open
+   one has neither.
+✅ `lib/db/client.ts` — pooled connections, config from env. Refuses
+   non-loopback hosts unless `CLOUDSENTINEL_ALLOW_REMOTE_DB=1`, requires TLS
+   when remote, and never puts a credential in output or an error message.
+   All queries are parameterised.
+✅ `lib/db/migrate.ts` + `npm run db:migrate` / `db:status` — numbered
+   migrations applied once each inside a transaction, tracked with a SHA-256
+   checksum. Editing an already-applied migration is detected and refused.
+   Advisory lock prevents two runners racing.
+✅ `lib/db/lifecycle.ts` — **pure function**, no SQL, so the risky logic is
+   testable with no database. Decides created / continuing / reopened /
+   resolved / unverified. Resolution requires: no collection errors, and either
+   the resource is gone (`resource_removed`) or the resource was inspected and
+   the rule stayed quiet (`fixed`). Absence is never treated as proof.
+✅ `lib/db/scans.ts` + `npm run scan -- --save` — writes the scan, its
+   resources, and finding occurrences in one transaction. `first_seen_at` is
+   never overwritten on re-scan.
+✅ `npm test` — **226 tests**, still no database required.
+✅ `npm run test:db` — **12 integration tests** against a real Postgres. They
+   create and drop their own `cloudsentinel_dbtest` database, so the dev
+   database is never touched. CI runs them against a service container.
+✅ **Verified end to end** against live LocalStack: first save creates 14
+   findings; re-saving the same inventory creates none and adds occurrences;
+   remediating the public bucket resolves exactly its 5 findings as `fixed`;
+   reverting reopens them with the original `first_seen_at` intact; and a scan
+   with collection errors resolves **nothing**, holding all 14 open.
  
 ## Environment notes specific to this machine
 - OS: Windows, PowerShell as primary shell
@@ -187,16 +225,13 @@ design decision in this project in an internship interview.
   `node:24-slim` container via Docker) and commit that version. Do not run a
   plain `npm install` afterwards, or it will strip the entries again.
 ## Not started yet (next steps)
-1. **Phase 4 — Postgres.** Schema for `scans`, `resources`, and `findings` via
-   a Docker container. The `Finding` type in `lib/rules/types.ts` is already
-   shaped as a table row, and finding ids are deterministic, so the interesting
-   work is scan history and finding lifecycle (first seen / still open /
-   resolved) rather than the schema itself.
-2. Build the Next.js dashboard + API layer (findings list, risk score, triage
-   UI, JWT auth)
-3. Add the ML anomaly detection layer with synthetic CloudTrail logs
-4. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
-5. Security hardening pass, README, demo video
+1. **Phase 5 — Next.js dashboard + API.** Findings list, risk score, scan
+   history, triage UI, JWT auth. `lib/db/scans.ts` already exposes
+   `recentScans()` and `openFindings()` (with occurrence counts and lifecycle
+   dates), so the API layer has queries to build on.
+2. Add the ML anomaly detection layer with synthetic CloudTrail logs
+3. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
+4. Security hardening pass, README, demo video
 
 Known follow-ups, none blocking:
 - IAM group *policy documents* are resolved, but a group's own nested
@@ -216,6 +251,12 @@ Known follow-ups, none blocking:
 - Benchmark control ids (CIS v3.0.0, AWS FSBP) are recorded for orientation and
   should be re-verified against the current benchmark revision before this is
   ever pointed at a real account — CIS renumbers controls between versions.
+- A reopened finding keeps its original `first_seen_at` and does not record how
+  many times it has reopened. That is the honest reading of "first seen", but a
+  `reopen_count` column would make repeat regressions visible on the dashboard.
+- Triage state (acknowledged, suppressed, false positive) is not modelled yet.
+  It belongs with the rule-suppression mechanism the two deferred security group
+  rules also need, and both want a database — which now exists.
 ## Full 6-8 week phased plan
 See `cloudsentinel-project-plan.md` (already generated) for the complete
 week-by-week breakdown, resume bullet draft, and free-tools reference table.
