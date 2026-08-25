@@ -12,6 +12,7 @@
  *   npm run scan -- --severity high           show only high and critical
  *   npm run scan -- --fail-on critical        exit non-zero if any critical
  *   npm run scan -- --rules                   list the registered rules
+ *   npm run scan -- --save                    store the scan in Postgres
  *
  * The `--input` form needs no LocalStack, no Docker, and no credentials:
  *
@@ -47,6 +48,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 import { collectInventory } from "../lib/collectors/inventory.ts";
+import {
+  closePool,
+  databaseConfig,
+  describeConnection,
+} from "../lib/db/client.ts";
+import { describeLifecycle } from "../lib/db/lifecycle.ts";
+import { saveScan } from "../lib/db/scans.ts";
 import {
   ALL_RULES,
   countBySeverity,
@@ -227,6 +235,8 @@ interface Options {
   minSeverity: Severity | null;
   failOn: Severity | null;
   listRules: boolean;
+  /** Persist this scan to Postgres, updating finding lifecycle. */
+  save: boolean;
 }
 
 function printUsage(): void {
@@ -238,6 +248,8 @@ function printUsage(): void {
       "  --severity <level>   only display findings at or above this level\n" +
       "  --fail-on <level>    exit 1 if any finding is at or above this level\n" +
       "  --rules              list the registered rules and exit\n" +
+      "  --save               store the scan in Postgres and update finding\n" +
+      "                       lifecycle (needs docker compose up -d db)\n" +
       "  --help               show this message\n\n" +
       `  <level> is one of: ${SEVERITY_ORDER.join(", ")}\n`,
   );
@@ -282,6 +294,7 @@ function parseArgs(args: string[]): Options {
       ? parseSeverity(valueFor(args, "--fail-on"), "--fail-on")
       : null,
     listRules: args.includes("--rules"),
+    save: args.includes("--save"),
   };
 }
 
@@ -340,6 +353,33 @@ async function main(): Promise<void> {
 
   const result = runRules(inventory);
 
+  // Saving happens before the report is printed, so that a database failure
+  // surfaces as an error rather than appearing after a screenful of findings
+  // that look like a completed run.
+  if (options.save) {
+    const config = databaseConfig();
+    const saved = await saveScan(inventory, result);
+
+    // Progress goes to stderr so `--json` stdout stays a clean stream.
+    const message =
+      `Saved scan #${saved.scanId} to ${describeConnection(config)} — ` +
+      describeLifecycle(saved.plan);
+    if (options.asJson) console.error(message);
+    else console.error(style.green(message));
+
+    // `unverified` findings are ones a previous scan reported that this scan
+    // could not re-check. They are not resolved and not re-reported, so without
+    // this line they would silently vanish from the run's output entirely.
+    if (saved.plan.unverified.length > 0) {
+      console.error(
+        style.yellow(
+          `  ${saved.plan.unverified.length} previously-open finding(s) could ` +
+            "not be re-checked by this scan and remain open.",
+        ),
+      );
+    }
+  }
+
   if (options.outPath) {
     await writeFile(options.outPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
     if (!options.asJson) console.error(style.green(`Wrote ${options.outPath}`));
@@ -371,17 +411,22 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  if (error instanceof UsageError) {
-    console.error(`\n${style.red("Usage:")} ${error.message}`);
-    printUsage();
-    process.exitCode = 2;
-    return;
-  }
-  console.error(
-    `\n${style.red("Failed:")} ${
-      error instanceof Error ? error.message : String(error)
-    }`,
-  );
-  process.exitCode = 1;
-});
+main()
+  .catch((error: unknown) => {
+    if (error instanceof UsageError) {
+      console.error(`\n${style.red("Usage:")} ${error.message}`);
+      printUsage();
+      process.exitCode = 2;
+      return;
+    }
+    console.error(
+      `\n${style.red("Failed:")} ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    process.exitCode = 1;
+  })
+  // Without `--save` no pool is ever created and this is a no-op. With it, Node
+  // would otherwise keep the process alive on the pool's open sockets and the
+  // command would appear to hang after printing its report.
+  .finally(closePool);
