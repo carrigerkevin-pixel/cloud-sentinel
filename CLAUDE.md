@@ -121,6 +121,47 @@ design decision in this project in an internship interview.
 ✅ `fixtures/inventory.json` — committed snapshot of a full scan, so the rule
    engine can be developed and tested offline. Regenerate with
    `npm run collect -- --out fixtures/inventory.json`.
+
+### Phase 3 complete — rule engine
+✅ `lib/rules/types.ts` — rule/finding vocabulary. A verdict has **three**
+   states: `pass`, `fail`, and `inconclusive`. Inconclusive is first-class and
+   is never rounded down to a pass, so an unreadable setting can never be
+   reported as a clean result.
+✅ `lib/rules/policy.ts` — shared IAM/S3 policy analysis: AWS wildcard
+   matching, public-principal detection across all three spellings
+   (`"*"`, `{AWS:"*"}`, `{AWS:["*"]}`), admin-statement detection, and stable
+   per-statement keys. Deliberately not a full policy evaluator — it does not
+   resolve Deny precedence, `NotAction`, or condition operators, and statements
+   using those are reported as *inconclusive* rather than guessed at.
+✅ `lib/rules/{s3,ec2,iam}.ts` — **12 rules** (6 S3, 1 security group emitting
+   per-port/per-IP-family findings, 5 IAM). Every rule checks the resource's
+   `unobserved` list before concluding anything from a `null` field.
+✅ `lib/rules/engine.ts` — runs every rule over every resource. Deterministic
+   finding ids (`<ruleId>|<resourceId>|<key>`) so a re-scan of an unchanged
+   environment produces the same ids and the dashboard can later track a
+   finding's lifecycle. A rule that throws becomes an inconclusive finding
+   instead of killing the scan. Includes a saturating 0-100 risk score.
+✅ `scripts/scan.ts` — `npm run scan`, plus `npm run scan:fixture`.
+   Options: `--input <file>`, `--json`, `--out <file>`, `--severity <level>`,
+   `--fail-on <level>`, `--rules`. Exit 0 clean / 1 threshold tripped or
+   collection errors / 2 bad arguments.
+✅ `lib/collectors/inventory.ts` — inventory assembly extracted from
+   `scripts/collect.ts` so the collector and scanner CLIs share one definition
+   of what a scan collects.
+✅ **Verified**: all 13 `EXPECTED_FINDINGS` reproduce with exact title matches,
+   the three compliant controls and the untouched `default` security group
+   produce zero findings, and a live scan against LocalStack matches the
+   committed fixture exactly. Risk score 87/100 (8 critical, 4 high, 2 medium).
+   The engine finds one legitimate 14th finding the seeder does not list:
+   `cloudsentinel-group-member` also inherits unrestricted `iam:PassRole` from
+   the legacy-admins group's `iam:*` inline policy.
+✅ `npm test` — **207 tests** (up from 53), still on Node's built-in runner
+   with no test framework dependency and no Docker or LocalStack needed.
+
+### CI
+✅ `.github/workflows/ci.yml` — runs on push and PR to `main`: type-check,
+   lint, full test suite, and a scanner run against the committed fixture.
+   No secrets, `permissions: contents: read` only.
  
 ## Environment notes specific to this machine
 - OS: Windows, PowerShell as primary shell
@@ -137,25 +178,35 @@ design decision in this project in an internship interview.
   Ad-hoc `aws` commands from Bash need `--region us-east-1` explicitly, or
   `AWS_REGION` exported; PowerShell is unaffected.
 ## Not started yet (next steps)
-1. **Phase 3 — rule engine.** 5-8 CIS-style checks reading a
-   `ResourceInventory`. Target the 13 findings in `EXPECTED_FINDINGS` in
-   `scripts/seed-localstack.ts`; the compliant controls must produce zero
-   findings. Rules must consult a resource's `unobserved` list before drawing
-   any conclusion from a `null` config field — a failed observation is not a
-   clean result. Can be built entirely against `fixtures/inventory.json` with
-   no LocalStack running.
-2. Set up Postgres schema (resources, findings, scans tables) via Docker
-3. Build the Next.js dashboard + API layer
-4. Add the ML anomaly detection layer with synthetic CloudTrail logs
-5. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
-6. Security hardening pass, README, demo video
+1. **Phase 4 — Postgres.** Schema for `scans`, `resources`, and `findings` via
+   a Docker container. The `Finding` type in `lib/rules/types.ts` is already
+   shaped as a table row, and finding ids are deterministic, so the interesting
+   work is scan history and finding lifecycle (first seen / still open /
+   resolved) rather than the schema itself.
+2. Build the Next.js dashboard + API layer (findings list, risk score, triage
+   UI, JWT auth)
+3. Add the ML anomaly detection layer with synthetic CloudTrail logs
+4. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
+5. Security hardening pass, README, demo video
 
 Known follow-ups, none blocking:
 - IAM group *policy documents* are resolved, but a group's own nested
   memberships are not — IAM does not nest groups, so this is complete in
   practice, noted only so it is not rediscovered as a gap.
-- No GitHub Actions workflow yet. `npm test` needs no services, so CI is a
-  short next step whenever it is wanted.
+- **Two security group rules are deliberately not implemented yet**:
+  unrestricted *egress*, and the CIS check that the default VPC security group
+  restrict all traffic. Both would fire on every security group in the current
+  fixtures — including the compliant control — which would make the Phase 3
+  contract test meaningless. They need a suppression/exception mechanism first.
+  The reasoning is recorded in the header of `lib/rules/ec2.ts`.
+- Rules flag only *unconditional* grants. A wildcard statement guarded by a
+  `Condition` is not reported, because CloudSentinel does not evaluate condition
+  operators and a stream of false positives on correctly-written conditional
+  policies would destroy the tool's credibility. The trade-off is documented in
+  `hasCondition` in `lib/rules/policy.ts`.
+- Benchmark control ids (CIS v3.0.0, AWS FSBP) are recorded for orientation and
+  should be re-verified against the current benchmark revision before this is
+  ever pointed at a real account — CIS renumbers controls between versions.
 ## Full 6-8 week phased plan
 See `cloudsentinel-project-plan.md` (already generated) for the complete
 week-by-week breakdown, resume bullet draft, and free-tools reference table.
