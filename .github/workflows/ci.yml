@@ -66,6 +66,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Next.js generates `next-env.d.ts` and `.next/types/` — which define
+      # globals such as `LayoutProps` that app/layout.tsx uses — and both are
+      # gitignored, so neither exists in a fresh checkout. Without this step the
+      # type-check fails in CI while passing locally, purely because a local
+      # machine has run `next dev` at some point. `typegen` produces just those
+      # definitions, so CI does not have to run a full production build to
+      # type-check a project whose dashboard is not written yet.
+      - name: Generate Next.js route types
+        run: npx next typegen
+
       - name: Type-check
         run: npx tsc --noEmit
 
