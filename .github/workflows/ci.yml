@@ -46,6 +46,33 @@ jobs:
   verify:
     runs-on: ubuntu-latest
 
+    # A throwaway Postgres for the integration tests in lib/db/*.dbtest.ts.
+    # GitHub starts it before the job and destroys it afterwards, so the tests
+    # get a real database without this workflow needing any secret — the
+    # password below protects a container that exists for the length of one job
+    # and is reachable only from it.
+    #
+    # The unit suite (`npm test`) deliberately does not use this: it must stay
+    # runnable with no database at all, which is what keeps it fast and what
+    # lets anyone clone the repo and run it immediately.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cloudsentinel
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+          POSTGRES_DB: cloudsentinel
+        ports:
+          - 5432:5432
+        # Without this the job races the container: Postgres accepts TCP
+        # before it is ready to serve queries, and the first migration fails
+        # intermittently.
+        options: >-
+          --health-cmd "pg_isready -U cloudsentinel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -88,6 +115,17 @@ jobs:
       # scripts/seed-localstack.ts promises.
       - name: Test
         run: npm test
+
+      # Integration tests against the service container above. They create and
+      # drop their own database, so they cannot interfere with anything else.
+      - name: Test (database)
+        run: npm run test:db
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: cloudsentinel
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+          POSTGRES_DB: cloudsentinel
 
       # Proves the scanner CLI itself still runs, parses its arguments, and can
       # evaluate a real inventory — the tests exercise the engine directly and

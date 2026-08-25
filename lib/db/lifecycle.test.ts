@@ -199,6 +199,25 @@ describe("planLifecycle — resolving", () => {
     assert.deepEqual(plan.unverified.sort(), ["rule-a|r1", "rule-a|r2"]);
   });
 
+  test("resolves a deleted resource even though no rule could evaluate it", () => {
+    // Regression test. An environment emptied of buckets reports no S3 rules at
+    // all — a rule that matches nothing never appears in the scan's summaries —
+    // so an over-eager "did the rule run?" guard left every finding on a deleted
+    // resource permanently unverified. The collector's clean, complete run is
+    // the evidence here, not any rule's silence.
+    const plan = planLifecycle(
+      [storedFinding("rule-a|resource-a", "open")],
+      scanContext([], {
+        observedResourceIds: new Set(),
+        evaluatedRuleIds: new Set(),
+      }),
+    );
+    assert.deepEqual(plan.resolved, [
+      { id: "rule-a|resource-a", reason: "resource_removed" },
+    ]);
+    assert.deepEqual(plan.unverified, []);
+  });
+
   test("a finding is not resolved when its rule did not run", () => {
     // A rule that was removed from the registry, or that threw, says nothing
     // about its old findings. Closing them would credit a fix to a check that

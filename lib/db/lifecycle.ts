@@ -204,21 +204,32 @@ export function planLifecycle(
       continue;
     }
 
-    // Guard 2: if the rule did not run, its silence is not a verdict.
+    // Guard 2: the resource is gone.
+    //
+    // Checked before the rule guard, and deliberately so. When a resource has
+    // been deleted, the evidence is the *collector's* — it completed without
+    // error and did not return the resource — and no rule could have evaluated
+    // it in any case. Requiring the rule to have run here would be incoherent,
+    // and it would leave every finding on a deleted resource permanently
+    // unverified: an environment emptied of buckets reports no S3 rules at all,
+    // since a rule that matches nothing never appears in the scan's summaries.
+    if (!scan.observedResourceIds.has(previous.resourceId)) {
+      resolved.push({ id: previous.id, reason: "resource_removed" });
+      continue;
+    }
+
+    // Guard 3: the resource is still there, so only the rule can say whether
+    // the problem is gone. If it did not run — removed from the registry, or it
+    // threw — its silence is not a verdict, and crediting a fix to a check that
+    // never executed is exactly the false clean result this file exists to
+    // prevent.
     if (!scan.evaluatedRuleIds.has(previous.ruleId)) {
       unverified.push(previous.id);
       continue;
     }
 
-    // Guard 3: the resource was seen and the rule stayed quiet — a real fix.
-    // Otherwise the resource is gone, which also closes the finding but is
-    // recorded as a different kind of event.
-    resolved.push({
-      id: previous.id,
-      reason: scan.observedResourceIds.has(previous.resourceId)
-        ? "fixed"
-        : "resource_removed",
-    });
+    // The resource was inspected and the rule stayed quiet about it: a real fix.
+    resolved.push({ id: previous.id, reason: "fixed" });
   }
 
   return { created, continuing, reopened, resolved, unverified };
