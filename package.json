@@ -14,7 +14,8 @@
     "collect": "node scripts/collect.ts",
     "scan": "node scripts/scan.ts",
     "scan:fixture": "node scripts/scan.ts --input fixtures/inventory.json",
-    "test": "node --test \"lib/**/*.test.ts\" \"fixtures/**/*.test.ts\""
+    "test": "node --test \"lib/**/*.test.ts\" \"fixtures/**/*.test.ts\"",
+    "relock": "docker run --rm -v .:/app -w /app node:24-slim npm install --package-lock-only"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1116.0",

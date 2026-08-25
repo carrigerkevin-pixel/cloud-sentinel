@@ -177,6 +177,15 @@ design decision in this project in an internship interview.
 - The Git Bash shell does not pick up the AWS CLI's configured default region.
   Ad-hoc `aws` commands from Bash need `--region us-east-1` explicitly, or
   `AWS_REGION` exported; PowerShell is unaffected.
+- **`package-lock.json` must be generated on Linux, not on Windows.** Running
+  `npm install` on this machine silently drops the `@emnapi/core` and
+  `@emnapi/runtime` entries that `@tailwindcss/oxide-wasm32-wasi` depends on.
+  The result installs fine locally but makes `npm ci` fail on `ubuntu-latest`
+  with "Missing: @emnapi/core@... from lock file", which breaks CI at the very
+  first step. After any dependency change, regenerate the lockfile with
+  `npm run relock` (runs `npm install --package-lock-only` inside a
+  `node:24-slim` container via Docker) and commit that version. Do not run a
+  plain `npm install` afterwards, or it will strip the entries again.
 ## Not started yet (next steps)
 1. **Phase 4 — Postgres.** Schema for `scans`, `resources`, and `findings` via
    a Docker container. The `Finding` type in `lib/rules/types.ts` is already
