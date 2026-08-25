@@ -35,12 +35,19 @@ on:
 permissions:
   contents: read
 
-# A new push to the same branch cancels the run still in flight. Without this,
-# pushing three commits in a row queues three full runs and the first two are
-# already obsolete before they finish.
+# On a pull request branch, a new push cancels the run still in flight: during
+# rapid iteration the earlier runs are obsolete before they finish, and their
+# results are nobody's business but the author's.
+#
+# On `main` every commit runs to completion instead. This project is built in
+# small, frequent commits that are pushed individually, and the point of that
+# history is being able to see each step land — a cancelled run leaves a grey
+# icon that is indistinguishable at a glance from a failure, which makes the
+# commit log harder to read rather than easier. The repository is public, so
+# Actions minutes are free and there is nothing to save by cancelling.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   verify:
