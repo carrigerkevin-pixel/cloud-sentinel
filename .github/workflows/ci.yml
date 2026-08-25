@@ -1,0 +1,91 @@
+# CloudSentinel — continuous integration.
+#
+# What this is: the automated check that runs on every push and pull request to
+# `main`. It type-checks the project, lints it, runs the full test suite, and
+# proves the scanner itself still executes end to end.
+#
+# Where it fits in the architecture: this is the outermost safety net around the
+# collector (lib/collectors/), the rule engine (lib/rules/), and the CLI entry
+# points (scripts/). Nothing here is part of the product — it exists so that a
+# change which breaks one of those is caught before it reaches the public repo.
+#
+# The reason this workflow can exist at all is a deliberate design decision made
+# in phases 1 and 2: every test runs against pure functions and the committed
+# `fixtures/inventory.json` snapshot. No Docker, no LocalStack container, no AWS
+# credentials, and no LocalStack auth token are needed. A CI job that required a
+# live cloud emulator would need secrets, would be slow, and would fail for
+# reasons unrelated to the code being changed.
+#
+# SECURITY: this workflow has no secrets and needs none. `permissions` is
+# narrowed to read-only contents below, so even if a dependency in the build
+# were compromised it could not push commits, open pull requests, or publish
+# packages using the workflow's token. That is the principle of least privilege
+# applied to CI itself — appropriate for a project that audits other people's
+# permissions.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: the job only ever reads the repository.
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the run still in flight. Without this,
+# pushing three commits in a row queues three full runs and the first two are
+# already obsolete before they finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Pinned to the major version used for development on this project.
+          # Node 24 matters specifically: the test suite and both CLIs import
+          # `.ts` files directly, relying on Node's built-in type stripping.
+          # An older major would fail to load a single file.
+          node-version: "24"
+          cache: npm
+
+      # `npm ci` rather than `npm install`: it installs exactly what
+      # package-lock.json pins and fails if the lockfile and package.json
+      # disagree, so a CI run can never silently resolve a different dependency
+      # tree than the one that was reviewed.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npx eslint .
+
+      # 207 tests across the collectors, the policy helpers, every rule, and the
+      # engine — including the Phase 3 contract test, which asserts that the real
+      # rule set over the real fixture produces exactly the findings
+      # scripts/seed-localstack.ts promises.
+      - name: Test
+        run: npm test
+
+      # Proves the scanner CLI itself still runs, parses its arguments, and can
+      # evaluate a real inventory — the tests exercise the engine directly and
+      # would not catch a broken entry point.
+      #
+      # Deliberately NOT gated with `--fail-on`: fixtures/inventory.json is a
+      # snapshot of intentionally-insecure fixtures, so it contains critical
+      # findings by design and any threshold would fail every run. In a real
+      # deployment this is where `--fail-on high` would go.
+      - name: Scan the committed fixture
+        run: npm run scan -- --input fixtures/inventory.json --severity critical
