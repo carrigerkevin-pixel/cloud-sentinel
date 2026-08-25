@@ -1,0 +1,89 @@
+# CloudSentinel — local infrastructure.
+#
+# What this is: the PostgreSQL database that stores scan history and finding
+# lifecycle. Everything upstream of it (collectors, rule engine) is stateless
+# and recomputes from scratch on every run; this is the first component in the
+# project that remembers anything.
+#
+# Where it fits in the architecture:
+#
+#   collectors --> rule engine --> ScanResult --> [ postgres ] --> dashboard
+#                                                       ^
+#                                                  this file
+#
+# Usage:
+#
+#   cp .env.example .env          # then set a password — see that file
+#   docker compose up -d db       # start Postgres
+#   npm run db:migrate            # create/update the schema
+#   docker compose down           # stop it (data survives)
+#   docker compose down -v        # stop it and DELETE all stored scans
+#
+# LocalStack is deliberately NOT defined here. It is run separately and
+# authenticated with a personal LocalStack account token, so folding it into
+# this file would mean either committing a reference to that token or shipping a
+# compose file that fails for anyone without one. Keeping the two independent
+# also means the database can be used to inspect stored scans while LocalStack
+# is stopped.
+
+services:
+  db:
+    # Pinned to a specific major version rather than `latest`. A silent major
+    # upgrade of a database is how a working project breaks after a `docker
+    # pull` — Postgres will refuse to start against a data directory written by
+    # a different major version, and the failure surfaces long after the change
+    # that caused it. Alpine keeps the image small.
+    image: postgres:17-alpine
+    container_name: cloudsentinel-db
+
+    environment:
+      # SECURITY: no default password. The `:?` syntax makes Compose abort with
+      # this message if the variable is unset, rather than falling back to
+      # something guessable.
+      #
+      # A default such as `postgres` would be convenient and is exactly the
+      # pattern that leaks: the value gets committed, then copied into a staging
+      # environment, then into something reachable. CloudSentinel exists to flag
+      # this class of mistake in other people's infrastructure, so its own
+      # infrastructure must not make it.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
+      POSTGRES_USER: ${POSTGRES_USER:-cloudsentinel}
+      POSTGRES_DB: ${POSTGRES_DB:-cloudsentinel}
+      # Postgres refuses to initialise a data directory with a locale mismatch
+      # on some hosts; setting it explicitly makes the container behave the same
+      # way on every machine.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+
+    ports:
+      # SECURITY: bound to loopback explicitly. The bare form `"5432:5432"`
+      # binds to 0.0.0.0, which publishes the database to every network the host
+      # is attached to — coffee shop wifi included — and Docker punches through
+      # the Windows firewall to do it. The `127.0.0.1:` prefix is the same
+      # loopback discipline lib/aws/localstack.ts enforces in code.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+    volumes:
+      # A named volume, so stopping the container does not lose scan history.
+      # This is the opposite of the LocalStack setup, which runs with
+      # persistence disabled on purpose: LocalStack holds disposable fixtures
+      # that `npm run seed` can recreate in seconds, while this holds the scan
+      # history that gives findings their "first seen" date — the one thing in
+      # the project that cannot be regenerated.
+      - cloudsentinel-db-data:/var/lib/postgresql/data
+
+    healthcheck:
+      # `npm run db:migrate` runs immediately after `docker compose up` in the
+      # documented workflow, and Postgres accepts TCP connections for a second
+      # or two before it is actually ready to serve queries. Without this the
+      # first migration intermittently fails with a connection reset.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloudsentinel} -d ${POSTGRES_DB:-cloudsentinel}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+    restart: unless-stopped
+
+volumes:
+  cloudsentinel-db-data:
+    name: cloudsentinel-db-data

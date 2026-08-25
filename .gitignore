@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...but the template must be committed: it documents which variables
+# exist without carrying any of their values.
+!.env.example
 
 # vercel
 .vercel
