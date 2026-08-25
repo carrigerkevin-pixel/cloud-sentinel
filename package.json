@@ -15,6 +15,8 @@
     "scan": "node scripts/scan.ts",
     "scan:fixture": "node scripts/scan.ts --input fixtures/inventory.json",
     "test": "node --test \"lib/**/*.test.ts\" \"fixtures/**/*.test.ts\"",
+    "db:migrate": "node scripts/db.ts migrate",
+    "db:status": "node scripts/db.ts status",
     "relock": "docker run --rm -v .:/app -w /app node:24-slim npm install --package-lock-only"
   },
   "dependencies": {
