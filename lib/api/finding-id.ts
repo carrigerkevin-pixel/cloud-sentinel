@@ -77,9 +77,24 @@ export function decodeFindingId(token: string): string | null {
   const decoded = Buffer.from(token, "base64url").toString("utf8");
   if (decoded.length === 0) return null;
 
-  // A round-trip check. It rejects tokens whose bytes are not valid UTF-8 —
-  // those decode to replacement characters, which would otherwise become a
-  // lookup for an id nobody could ever have issued.
+  // Reject control characters, NUL above all.
+  //
+  // A finding id is built from a rule id, an ARN, and a port key — all
+  // printable text. A control character in there means the token was not one
+  // this application issued. NUL matters most: it terminates a string in C, so
+  // a value carrying one can be read as two different strings by two different
+  // layers, which is the shape of a whole family of parsing bugs.
+  //
+  // This is not caught by the round-trip check below, which is exactly why it
+  // is a separate test: appending one character to a token can decode to the
+  // original id plus a trailing NUL, and that longer string re-encodes to the
+  // longer token perfectly happily.
+  if (/[\u0000-\u001f\u007f]/.test(decoded)) return null;
+
+  // A round-trip check. base64url without padding has one spelling per input,
+  // so a token that does not re-encode to itself is not one this application
+  // produced — and accepting it would make a single finding reachable at
+  // several different URLs.
   if (encodeFindingId(decoded) !== token) return null;
 
   return decoded;
