@@ -116,10 +116,14 @@ jobs:
       - name: Lint
         run: npx eslint .
 
-      # 207 tests across the collectors, the policy helpers, every rule, and the
-      # engine — including the Phase 3 contract test, which asserts that the real
-      # rule set over the real fixture produces exactly the findings
+      # The unit suite: the collectors, the policy helpers, every rule, the
+      # engine, the auth primitives, and the dashboard's formatting helpers.
+      # Includes the Phase 3 contract test, which asserts that the real rule set
+      # over the real fixture produces exactly the findings
       # scripts/seed-localstack.ts promises.
+      #
+      # No count is quoted here on purpose — it goes stale on every commit that
+      # adds a test, and a stale number in a comment is worse than none.
       - name: Test
         run: npm test
 
@@ -133,6 +137,24 @@ jobs:
           POSTGRES_USER: cloudsentinel
           POSTGRES_PASSWORD: ci-throwaway-not-a-secret
           POSTGRES_DB: cloudsentinel
+
+      # A production build, which type-checking alone does not replace.
+      #
+      # This step exists because of a specific bug it would have caught: a
+      # client component imported a value from lib/db/triage.ts, which reaches
+      # `pg` through its own imports, so the bundler tried to put the PostgreSQL
+      # driver into a browser bundle. `tsc` was perfectly happy — every type was
+      # correct — and the failure appeared only at build time. Any rule about
+      # what may cross the server/client boundary is enforced by the bundler, so
+      # the bundler has to run in CI.
+      - name: Build
+        run: npx next build
+        env:
+          # lib/auth/jwt.ts refuses to load without a secret of at least 32
+          # characters, and the build imports it while prerendering. This value
+          # signs nothing that outlives the job and protects nothing — the real
+          # one lives in .env and is never committed.
+          CLOUDSENTINEL_JWT_SECRET: ci-build-only-not-a-secret-value-32chars
 
       # Proves the scanner CLI itself still runs, parses its arguments, and can
       # evaluate a real inventory — the tests exercise the engine directly and
