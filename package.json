@@ -18,6 +18,11 @@
     "test:db": "node --test \"lib/**/*.dbtest.ts\"",
     "db:migrate": "node scripts/db.ts migrate",
     "db:status": "node scripts/db.ts status",
+    "user:create": "node scripts/user.ts create",
+    "user:list": "node scripts/user.ts list",
+    "user:passwd": "node scripts/user.ts passwd",
+    "user:revoke": "node scripts/user.ts revoke",
+    "user:delete": "node scripts/user.ts delete",
     "relock": "docker run --rm -v .:/app -w /app node:24-slim npm install --package-lock-only"
   },
   "dependencies": {
