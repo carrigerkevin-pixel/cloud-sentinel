@@ -203,6 +203,92 @@ design decision in this project in an internship interview.
    reverting reopens them with the original `first_seen_at` intact; and a scan
    with collection errors resolves **nothing**, holding all 14 open.
  
+### Phase 5 complete — dashboard, API, and auth
+✅ `db/migrations/0002_dashboard.sql` — three tables. `users` (scrypt hash,
+   two roles, `token_version`), `finding_triage` (current human decision), and
+   `triage_events` (append-only log of every change). The design decision that
+   matters: **triage never touches `findings.status`**. `open`/`resolved` stays
+   the scanner's claim about reality; triage is the human overlay. Suppressing a
+   finding hides it from the default view and changes nothing about whether the
+   bucket is still public. A CHECK constraint requires a written justification
+   for any state other than `untriaged`.
+✅ `lib/auth/password.ts` — scrypt (N=16384), per-user salt, cost parameters
+   stored inside the hash so they can be raised later without locking anyone
+   out. Constant-time comparison. Exports `DECOY_PASSWORD_HASH`, verified
+   against when no account matches, so an unknown email costs the same as a
+   known one and the login form cannot be used to enumerate accounts.
+✅ `lib/auth/jwt.ts` — HS256 sign/verify written directly on `node:crypto`, no
+   library. The algorithm is decided by the code and never read from the token,
+   so `alg: none` and algorithm-confusion forgeries are rejected. Signature is
+   checked *before* any claim is trusted.
+✅ `lib/db/users.ts` + `npm run user:create|list|passwd|revoke|delete` — there
+   is no sign-up page; accounts exist only via the CLI, and the password is
+   prompted for with echo suppressed rather than passed as an argument (which
+   would land in the shell history and the process list).
+✅ **Revocation.** A JWT cannot normally be recalled before it expires.
+   `users.token_version` is embedded as a claim and compared on every request,
+   so `npm run user:revoke` kills every token for an account immediately.
+   Changing a password or a role bumps it too — a demoted admin loses admin
+   access on their next request, not whenever their token happens to expire.
+✅ `lib/auth/session.ts` — the token rides in an `httpOnly`, `SameSite=strict`
+   cookie, `Secure` in production. Not `localStorage`: an XSS flaw can read
+   `localStorage` and exfiltrate a session, but cannot read an httpOnly cookie.
+✅ `lib/api/http.ts` — `requireUser()` / `requireAdmin()` guards returning a
+   discriminated union, so TypeScript refuses to let a route reach `user`
+   without handling the failure. Guards live in the routes rather than
+   middleware, because the Edge runtime has neither `node:crypto` nor a
+   database connection and a middleware check would have to trust the token's
+   own claims.
+✅ `lib/api/rate-limit.ts` — fixed-window limiter on the login route, 10
+   attempts per 15 minutes per client. Checked before the body is parsed, since
+   each scrypt verification costs the server ~100 ms and an unthrottled login
+   endpoint is a denial-of-service amplifier. Its limitations (in-process,
+   resets on restart, trusts `x-forwarded-for`) are documented in the file.
+✅ `app/api/` — `auth/login`, `auth/logout`, `auth/session`, `findings`,
+   `findings/[id]`, `findings/[id]/triage`, `scans`, `summary`. Reads need any
+   signed-in user; the only state-changing route needs an admin.
+✅ `lib/api/finding-id.ts` — finding ids embed ARNs and therefore contain
+   forward slashes, so they cannot go in a URL path segment. They are
+   base64url-encoded for URLs and validated on the way back, including a
+   rejection of control characters.
+✅ `app/(app)/` — the dashboard: overview (risk score, severity breakdown,
+   recent scans), findings list with URL-driven filters, finding detail with
+   full occurrence history and the triage control, and scan history. Server
+   components querying Postgres directly; the layout re-verifies the session
+   before any child page renders.
+✅ **Suppression can never improve the headline number.** The overview reports
+   the filtered count *and* the true total *and* how many are hidden. A risk
+   score that dropped when you clicked "suppress" would reward hiding problems
+   rather than fixing them.
+✅ `npm test` — **285 tests** (up from 226), still no database required. Roughly
+   two thirds of the JWT suite is forgery attempts.
+✅ `npm run test:db` — **58 integration tests** (up from 12), across three
+   `.dbtest.ts` files that each create and drop their own database (different
+   names, because `node --test` runs files concurrently).
+✅ CI now runs `npx next build` as well as the type-check. This caught a real
+   bug the type-checker could not: a client component imported a value from
+   `lib/db/triage.ts`, so the bundler tried to put the PostgreSQL driver into a
+   browser bundle. The triage vocabulary now lives in `lib/types/triage.ts`,
+   which imports nothing that reaches the database.
+✅ **Verified end to end** against the running dev server: unauthenticated
+   pages redirect to `/login` and every API route answers 401; a tampered
+   payload, an `alg: none` forgery, and a token signed with the wrong secret are
+   all rejected; revoking sessions and demoting a role each kill a live cookie
+   mid-session; the rate limiter blocks the 11th attempt with `Retry-After`; a
+   viewer gets 403 on triage and never sees the control, while still being able
+   to read who suppressed what.
+
+### Getting the dashboard running
+```
+docker compose up -d db
+npm run db:migrate
+npm run user:create -- you@example.com --admin   # prompts for a password
+npm run scan -- --save                           # needs LocalStack + npm run seed
+npm run dev                                      # http://localhost:3000
+```
+`CLOUDSENTINEL_JWT_SECRET` must be set in `.env` — see `.env.example`. There is
+no default, and `lib/auth/jwt.ts` refuses to start without one.
+
 ## Environment notes specific to this machine
 - OS: Windows, PowerShell as primary shell
 - Python installed at `C:\Users\carri\AppData\Roaming\Python\Python314\`
@@ -227,13 +313,9 @@ design decision in this project in an internship interview.
   `node:24-slim` container via Docker) and commit that version. Do not run a
   plain `npm install` afterwards, or it will strip the entries again.
 ## Not started yet (next steps)
-1. **Phase 5 — Next.js dashboard + API.** Findings list, risk score, scan
-   history, triage UI, JWT auth. `lib/db/scans.ts` already exposes
-   `recentScans()` and `openFindings()` (with occurrence counts and lifecycle
-   dates), so the API layer has queries to build on.
-2. Add the ML anomaly detection layer with synthetic CloudTrail logs
-3. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
-4. Security hardening pass, README, demo video
+1. Add the ML anomaly detection layer with synthetic CloudTrail logs
+2. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
+3. Security hardening pass, README, demo video
 
 Known follow-ups, none blocking:
 - IAM group *policy documents* are resolved, but a group's own nested
@@ -256,9 +338,22 @@ Known follow-ups, none blocking:
 - A reopened finding keeps its original `first_seen_at` and does not record how
   many times it has reopened. That is the honest reading of "first seen", but a
   `reopen_count` column would make repeat regressions visible on the dashboard.
-- Triage state (acknowledged, suppressed, false positive) is not modelled yet.
-  It belongs with the rule-suppression mechanism the two deferred security group
-  rules also need, and both want a database — which now exists.
+- Triage state is modelled now (phase 5), but the two deferred security group
+  rules still need a *rule-level* suppression mechanism, which is a different
+  thing: triage hides one finding on one resource, whereas those rules need a
+  way to exempt a whole class of resource before they can be switched on
+  without breaking the phase 3 contract test.
+- Sessions are stateless JWTs, so signing out only clears the browser
+  cookie — a token already copied elsewhere keeps working until it expires
+  (8 hours). `npm run user:revoke` is the immediate, everywhere version.
+  Documented in `lib/auth/session.ts`.
+- Login rate limiting is in-process, so it resets on restart and would not
+  hold across more than one instance. Fine for a locally-run tool; a real
+  deployment wants a shared store or a limit at the reverse proxy. The
+  limitations are written out in `lib/api/rate-limit.ts`.
+- A finding that is resolved and later reopens keeps whatever triage state it
+  had. Arguably a reopened finding should return to `untriaged` so a fix that
+  regressed gets looked at again rather than staying suppressed.
 ## Full 6-8 week phased plan
 See `cloudsentinel-project-plan.md` (already generated) for the complete
 week-by-week breakdown, resume bullet draft, and free-tools reference table.

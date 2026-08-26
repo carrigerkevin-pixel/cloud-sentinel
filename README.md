@@ -23,12 +23,12 @@ LocalStack ──▶ collectors ──▶ ResourceInventory ──▶ rule engin
 | 3 — Rule engine | ✅ complete |
 | CI (GitHub Actions) | ✅ complete |
 | 4 — Postgres persistence | ✅ complete |
-| 5 — Next.js dashboard + API | planned |
+| 5 — Next.js dashboard + API | ✅ complete |
 | 6 — ML anomaly layer | planned |
 | 7 — Docker + Kubernetes | planned |
 
-**226 tests** on Node's built-in test runner — no test framework dependency, and no
-Docker, LocalStack, or AWS credentials needed. A further **12 integration tests**
+**285 tests** on Node's built-in test runner — no test framework dependency, and no
+Docker, LocalStack, or AWS credentials needed. A further **58 integration tests**
 (`npm run test:db`) run against a real Postgres.
 
 ---
@@ -211,14 +211,32 @@ lib/
     migrate.ts            numbered, checksummed migrations
     lifecycle.ts          finding lifecycle rules (pure, no SQL)
     scans.ts              persistence and history queries
+    users.ts              accounts, login, session revocation
+    triage.ts             triage state + append-only audit trail
+    dashboard.ts          every read query the dashboard makes
+  auth/
+    password.ts           scrypt hashing, decoy hash, rehash-on-login
+    jwt.ts                HS256 on node:crypto; rejects alg:none
+    session.ts            httpOnly SameSite=strict cookie, per-request checks
+  api/
+    http.ts               JSON helpers, requireUser / requireAdmin guards
+    rate-limit.ts         login throttling
+    finding-id.ts         base64url ids for URLs (real ids contain slashes)
+  ui/format.ts            severity colours, dates, triage labels
   util/concurrency.ts     bounded parallelism
   util/env.ts             .env loading
 db/migrations/            the schema, append-only
+app/
+  (app)/                  the authenticated dashboard: overview, findings, scans
+  login/                  the only unauthenticated page
+  components/             TriageControl, LogoutButton (client components)
+  api/                    auth, findings, scans, summary, triage
 scripts/
   seed-localstack.ts      npm run seed
   collect.ts              npm run collect
   scan.ts                 npm run scan
   db.ts                   npm run db:migrate / db:status
+  user.ts                 npm run user:create / list / passwd / revoke / delete
 docker-compose.yml        local Postgres
 fixtures/inventory.json   committed snapshot, so everything above is testable offline
 ```
@@ -232,5 +250,77 @@ TypeScript · Node.js · Next.js · PostgreSQL · Docker · Kubernetes · Python
 
 ## Dashboard
 
-The Next.js dashboard is not built yet (phase 5). `npm run dev` currently serves the
-default scaffold on [http://localhost:3000](http://localhost:3000).
+```bash
+docker compose up -d db
+npm run db:migrate
+npm run user:create -- you@example.com --admin   # prompts for a password
+npm run scan -- --save                           # needs LocalStack; see quick start
+npm run dev                                      # http://localhost:3000
+```
+
+`CLOUDSENTINEL_JWT_SECRET` must be set in `.env` — see `.env.example`. There is no
+default value anywhere in the code, and the app refuses to start without one.
+
+Four pages, all server-rendered:
+
+| Page | Shows |
+| --- | --- |
+| `/` | Risk score, severity breakdown, what is hidden by triage, recent scans |
+| `/findings` | Filterable list, most severe and longest-standing first |
+| `/findings/<id>` | Evidence, remediation, every scan that reported it, triage |
+| `/scans` | Scan history with new-finding counts and collection errors |
+
+### Authentication
+
+There is no sign-up page. Accounts are created only from the command line, because a
+security dashboard that lets anonymous visitors register themselves is not one worth
+running.
+
+- **Passwords** are hashed with scrypt (N=16384) and a per-user salt. The cost
+  parameters are stored inside the hash string, so they can be raised later without
+  invalidating existing passwords — an old hash still verifies, and is upgraded on the
+  next successful login.
+- **Login does not leak which emails exist.** A wrong password and an unknown address
+  produce the same response *and* take the same time: when no account matches, the
+  password is still verified against a decoy hash. An identical message delivered a
+  hundred times faster leaks the same fact.
+- **Sessions are JWTs**, HS256, signed and verified with `node:crypto` rather than a
+  library. The algorithm is fixed in code and never read from the token, so the
+  `alg: none` and algorithm-confusion forgeries are rejected. The signature is checked
+  before any claim is trusted.
+- **The token lives in an `httpOnly`, `SameSite=strict` cookie**, not `localStorage`.
+  A cross-site scripting flaw can read `localStorage` and carry a session off the
+  machine; it cannot read an httpOnly cookie. `SameSite=strict` is what stops another
+  site from making authenticated requests with it.
+- **Sessions can be revoked**, which a JWT normally cannot be. Each token carries the
+  `token_version` it was issued under, compared against the database on every request.
+  `npm run user:revoke` bumps it and every token for that account stops working
+  immediately. Changing a password or a role bumps it too, so a demoted admin loses
+  admin access on their next request rather than whenever their token expires.
+- **Login is rate limited** — 10 attempts per 15 minutes per client, checked before
+  any hashing happens. Each scrypt verification costs the server ~100 ms, so an
+  unthrottled login endpoint is a denial-of-service amplifier as well as a guessing
+  target.
+
+### Triage, and why it cannot flatter the numbers
+
+Findings can be marked **acknowledged**, **suppressed**, or a **false positive**.
+Two rules make this trustworthy rather than a way to make problems go away:
+
+**Triage never changes whether a finding is open.** `findings.status` is the
+scanner's claim about reality and only the lifecycle logic sets it. Triage is the
+human overlay, in its own table. A suppressed finding on a still-public bucket reads
+as *open* and *suppressed* at the same time, because that is the truth. If clicking
+"suppress" marked something resolved, every report the tool produced would be
+worthless.
+
+**Nothing disappears silently.** The overview shows the filtered count, the true
+total, and how many findings are hidden. The risk score is computed from every open
+finding. A score that dropped when you suppressed something would reward hiding
+problems instead of fixing them.
+
+Every change is appended to `triage_events` with the actor's email stored as text —
+so deleting a user account cannot erase who suppressed what — and a written
+justification is required for any state that hides a finding, enforced both in the
+application and by a database CHECK constraint. Viewers can read every decision and
+its author; only admins can make one.
