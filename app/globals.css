@@ -19,8 +19,21 @@
   }
 }
 
+/* The dashboard is dark-only. Colours are applied with Tailwind utilities on
+   the elements themselves (see app/layout.tsx and lib/ui/format.ts), so the
+   variables above are left in place for anything that wants the raw tokens
+   while the body below sets the baseline.
+
+   Dark-only is a deliberate choice rather than an unfinished one: severity is
+   communicated largely through colour, and maintaining two palettes that both
+   keep critical/high/medium distinguishable is real work that buys nothing for
+   a single-operator tool. */
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Long ARNs and policy fragments must wrap rather than force the page to
+   scroll sideways. Applied where `break-anywhere` is used on identifier text. */
+.break-anywhere {
+  overflow-wrap: anywhere;
 }
