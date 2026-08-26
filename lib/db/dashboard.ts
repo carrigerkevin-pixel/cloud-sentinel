@@ -30,7 +30,7 @@
  */
 
 import { query } from "./client.ts";
-import type { TriageState } from "./triage.ts";
+import type { TriageState } from "../types/triage.ts";
 
 // ---------------------------------------------------------------------------
 // Summary

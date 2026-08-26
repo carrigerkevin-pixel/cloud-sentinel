@@ -34,88 +34,34 @@
  * state and its history can never disagree.
  */
 
-import { query, withTransaction } from "./client.ts";
 import type { User } from "./users.ts";
+import { query, withTransaction } from "./client.ts";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// The triage vocabulary lives in lib/types/triage.ts, which imports nothing
+// that reaches the database. That separation exists so the browser-side triage
+// control can import the state list and the note limit without the bundler
+// following a chain into `pg` — see the header of that file. Re-exported here
+// so server-side callers still have one place to import triage from.
+export {
+  HIDDEN_STATES,
+  isTriageState,
+  MAX_NOTE_LENGTH,
+  TRIAGE_STATES,
+  type Triage,
+  type TriageEvent,
+  type TriageState,
+} from "../types/triage.ts";
 
-/**
- * What a person has decided about a finding.
- *
- * `suppressed` and `false_positive` both hide a finding from the default view,
- * and are deliberately kept apart. One is a statement about the business — the
- * risk is real and accepted. The other is a bug report about the rule set.
- * Collapsing them into a single "ignore" would throw away the only signal that
- * says which rules are miscalibrated and need retuning.
- */
-export type TriageState =
-  | "untriaged"
-  | "acknowledged"
-  | "suppressed"
-  | "false_positive";
-
-/** Every valid state, for validating input from the network. */
-export const TRIAGE_STATES: readonly TriageState[] = [
-  "untriaged",
-  "acknowledged",
-  "suppressed",
-  "false_positive",
-];
-
-/**
- * States that hide a finding from the default dashboard view.
- *
- * `acknowledged` is deliberately *not* one of them: acknowledging a finding
- * means "yes, this is real, it is on the list", which is a reason to keep
- * looking at it, not to stop.
- */
-export const HIDDEN_STATES: readonly TriageState[] = [
-  "suppressed",
-  "false_positive",
-];
-
-/** Type guard for a value arriving from a request body. */
-export function isTriageState(value: unknown): value is TriageState {
-  return (
-    typeof value === "string" &&
-    (TRIAGE_STATES as readonly string[]).includes(value)
-  );
-}
-
-/** The current triage decision on a finding. */
-export interface Triage {
-  findingId: string;
-  state: TriageState;
-  note: string | null;
-  updatedBy: number | null;
-  updatedAt: Date;
-}
-
-/** One entry in a finding's triage history. */
-export interface TriageEvent {
-  id: number;
-  findingId: string;
-  previousState: TriageState | null;
-  newState: TriageState;
-  note: string | null;
-  /**
-   * The actor's email, stored as plain text rather than joined from `users`.
-   *
-   * This is what makes the trail survive the account being deleted. An audit
-   * log that can be erased by removing a user is not an audit log.
-   */
-  actorEmail: string;
-  createdAt: Date;
-}
+import {
+  MAX_NOTE_LENGTH,
+  type Triage,
+  type TriageEvent,
+  type TriageState,
+} from "../types/triage.ts";
 
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
-
-/** Longest justification accepted. Generous for prose, bounded against abuse. */
-export const MAX_NOTE_LENGTH = 2000;
 
 /**
  * Raised when a triage change is not allowed. Carries a message safe to show a

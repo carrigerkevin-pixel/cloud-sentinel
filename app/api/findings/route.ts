@@ -38,7 +38,7 @@ import {
   MAX_PAGE_SIZE,
   type FindingFilters,
 } from "../../../lib/db/dashboard.ts";
-import { isTriageState, type TriageState } from "../../../lib/db/triage.ts";
+import { isTriageState, type TriageState } from "../../../lib/types/triage.ts";
 
 /** The four severities, as the only values accepted from a query string. */
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
