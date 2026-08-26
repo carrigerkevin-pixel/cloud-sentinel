@@ -47,11 +47,13 @@ Rule of thumb: if a reader would have to open a second file or search AWS docs
 to understand why a line exists, that reason belongs in a comment.
 
 ## Working style with Claude Code
-Before writing any file, editing any file, or running any command, Claude gives
-a short plain-language explanation of what it is about to do and why, then stops
-and waits for explicit approval. One explanation per step — no batching several
-files behind a single approval, and no writing first and explaining afterward.
-Reading existing files to gather context does not require approval.
+Claude explains each step in short plain language *before* doing it — what file
+is about to be written or what command is about to run, and why — and then goes
+ahead and does it. No writing first and explaining afterward.
+
+Claude does **not** stop to ask for permission. That gate was in place through
+phase 4 and has been lifted; the narration exists for comprehension, not as an
+approval checkpoint.
 
 The point is comprehension: I need to be able to follow and later defend every
 design decision in this project in an internship interview.
