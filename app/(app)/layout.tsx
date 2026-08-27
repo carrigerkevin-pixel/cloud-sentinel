@@ -47,6 +47,13 @@ import LogoutButton from "../components/LogoutButton.tsx";
 const NAV = [
   { href: "/", label: "Overview" },
   { href: "/findings", label: "Findings" },
+  // Behavioural detections from the ML layer. Deliberately a sibling of
+  // Findings rather than a tab inside it: the two answer different questions —
+  // "what is configured wrongly" versus "who is behaving strangely" — and an
+  // intrusion using stolen but legitimate credentials shows up only in the
+  // second. Nesting it would imply anomalies are a kind of finding, which would
+  // invite the expectation that they can be resolved. They cannot.
+  { href: "/anomalies", label: "Anomalies" },
   { href: "/scans", label: "Scans" },
 ] as const;
 
