@@ -29,7 +29,16 @@
  *    worse, a migration running against one. That mirrors the loopback
  *    discipline lib/aws/localstack.ts already enforces for the AWS side, so the
  *    project holds itself to one rule rather than two.
+ *
+ * 3. **A remote database is always verified, never merely encrypted.** Any
+ *    non-loopback connection uses TLS with certificate verification on, with no
+ *    switch to turn it off. When the certificate comes from a private authority
+ *    — which is the case for the in-cluster Postgres in k8s/ — the authority is
+ *    supplied through {@link CA_FILE} so verification can succeed honestly
+ *    rather than being skipped. See {@link resolveSslOptions}.
  */
+
+import { readFileSync } from "node:fs";
 
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
@@ -66,6 +75,33 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
  * point CloudSentinel at a shared database on purpose.
  */
 const ALLOW_REMOTE = "CLOUDSENTINEL_ALLOW_REMOTE_DB";
+
+/**
+ * Environment variable naming a PEM file of certificate authorities to trust
+ * for the database's TLS certificate, in addition to nothing else.
+ *
+ * This exists because of Kubernetes. In a cluster the database is reached at
+ * `cloudsentinel-db.cloudsentinel.svc.cluster.local`, which is not loopback, so
+ * the TLS requirement below applies to every single connection — and the
+ * cluster's Postgres presents a certificate from a private CA that no public
+ * trust store has ever heard of.
+ *
+ * There were two ways out of that, and the choice matters:
+ *
+ *   - Relax the rule: add a switch that skips certificate verification for
+ *     "internal" hosts. This is the common answer and it is wrong. It makes the
+ *     connection encrypted but unauthenticated, so anything able to answer on
+ *     the service address — a misrouted Service, a hostile pod on the same
+ *     network — receives scan findings and can return whatever it likes. A tool
+ *     that reports on other people's weak configurations must not ship the
+ *     habit it criticises.
+ *   - Satisfy the rule: hand the client the CA that actually signed the
+ *     certificate, and keep verification fully on. That is this variable.
+ *
+ * When unset, the system trust store is used, which is the right default for a
+ * managed cloud database presenting a publicly-trusted certificate.
+ */
+const CA_FILE = "POSTGRES_CA_CERT_FILE";
 
 /**
  * Reads connection settings from the environment.
@@ -156,6 +192,67 @@ export function describeConnection(config: DatabaseConfig): string {
   return `${config.user}@${config.host}:${config.port}/${config.database}`;
 }
 
+/**
+ * TLS settings for a connection, or `undefined` to connect without TLS.
+ *
+ * Mirrors the subset of `pg`'s SSL options this project uses, kept as an
+ * explicit type so {@link resolveSslOptions} can be tested without constructing
+ * a pool or reaching a database.
+ */
+export interface SslOptions {
+  /** PEM-encoded certificate authorities to trust, when a private CA is in use. */
+  ca?: string;
+  /** Always true. Present so the value is visible in tests rather than implied. */
+  rejectUnauthorized: true;
+}
+
+/**
+ * Decides how a connection should be protected.
+ *
+ * The rule in one line: **loopback connects in the clear, everything else
+ * verifies a certificate.** There is deliberately no third case and no way to
+ * turn verification off.
+ *
+ * A loopback connection never reaches a network interface, so TLS there would
+ * mean managing certificates to defend against an attacker who, by definition,
+ * is already executing code on this machine. Anything else carries scan
+ * findings — a ranked list of exactly where an environment is weakest, which is
+ * a target map — and must be both encrypted and authenticated in transit.
+ *
+ * @param config - resolved connection settings; only `isLocal` is consulted.
+ * @returns `undefined` for loopback. Otherwise `rejectUnauthorized: true`, with
+ *   `ca` populated when {@link CA_FILE} names a readable PEM file.
+ * @throws if {@link CA_FILE} is set but the file cannot be read. This is a hard
+ *   failure on purpose: falling back to the system trust store would silently
+ *   turn a deployment that meant to pin a private CA into one that trusts every
+ *   public authority instead, and nothing about the running system would look
+ *   wrong. A missing secret mount should stop the pod, not quietly downgrade it.
+ */
+export function resolveSslOptions(config: DatabaseConfig): SslOptions | undefined {
+  if (config.isLocal) return undefined;
+
+  const caPath = process.env[CA_FILE];
+  if (!caPath) return { rejectUnauthorized: true };
+
+  let ca: string;
+  try {
+    ca = readFileSync(caPath, "utf8");
+  } catch (error) {
+    // The path is named because it is configuration, not a credential — a CA
+    // certificate is public by nature. The underlying error is included because
+    // "file not found" and "permission denied" call for different fixes, and
+    // this message is only ever seen by whoever is deploying.
+    throw new Error(
+      `${CA_FILE} is set to "${caPath}" but that file could not be read: ` +
+        `${error instanceof Error ? error.message : String(error)}. ` +
+        "It must be a PEM file containing the authority that signed the " +
+        "database's TLS certificate.",
+    );
+  }
+
+  return { ca, rejectUnauthorized: true };
+}
+
 // ---------------------------------------------------------------------------
 // Pool
 // ---------------------------------------------------------------------------
@@ -203,12 +300,10 @@ export function getPool(): Pool {
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 10_000,
 
-    // SECURITY: require TLS for anything that is not loopback. A loopback
-    // connection never reaches a network interface, so TLS there would add
-    // certificate management for no threat model. A remote one carries scan
-    // findings — a list of exactly where an environment is weakest — and must
-    // not cross a network in the clear.
-    ssl: config.isLocal ? undefined : { rejectUnauthorized: true },
+    // SECURITY: require TLS for anything that is not loopback. The full
+    // reasoning, including why there is no option to skip verification, lives
+    // in resolveSslOptions() above.
+    ssl: resolveSslOptions(config),
   });
 
   // `pg` emits 'error' on idle clients dropped by the server. Unhandled, this
