@@ -13,11 +13,14 @@ const nextConfig: NextConfig = {
    * Emit a self-contained server bundle at `.next/standalone`.
    *
    * This exists for the container image. Without it, a runtime image has to
-   * carry the whole `node_modules` tree — roughly 500MB here, most of it the
-   * AWS SDK, TypeScript, ESLint and the React toolchain, none of which the
-   * running dashboard calls. `standalone` instead traces which files the server
-   * actually imports and copies only those, which takes the runtime image from
-   * hundreds of megabytes to tens.
+   * carry the whole `node_modules` tree — 500MB here, most of it the AWS SDK,
+   * TypeScript, ESLint and the React toolchain, none of which the running
+   * dashboard calls. `standalone` instead traces which files the server
+   * actually imports and copies only those: 31MB, a sixteenth of the size.
+   *
+   * (The finished image is larger than that figure — around 317MB — because
+   * the Node base image is most of it. The 500MB-to-31MB reduction is the part
+   * this project controls; the base image is the floor beneath it.)
    *
    * SECURITY, and the reason this matters beyond image size: everything left
    * out of the image is code that cannot be executed inside the container if
