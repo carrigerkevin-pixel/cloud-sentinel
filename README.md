@@ -1,16 +1,32 @@
 # CloudSentinel
 
 A hybrid rule-based and ML-based **Cloud Security Posture Management (CSPM)** tool.
-It audits a simulated AWS environment for misconfigurations, will detect anomalous
-behaviour via a machine-learning layer, and presents findings in a dashboard.
+It audits a simulated AWS environment for misconfigurations, detects anomalous
+behaviour via a machine-learning layer, and presents both in a dashboard.
 
 Built as a portfolio project — Georgia Tech CS, Cybersecurity thread.
 
+Two independent pipelines, answering two different questions:
+
 ```
-LocalStack ──▶ collectors ──▶ ResourceInventory ──▶ rule engine ──▶ Finding[] ──▶ dashboard
-  (AWS API)    read-only        normalized model     12 CIS-style      ranked        (planned)
-                                                        checks        + scored
+  "what is configured wrongly?"                        rule-based
+
+    LocalStack ──▶ collectors ──▶ rule engine ──▶ Finding[]  ──┐
+     (AWS API)     read-only      12 CIS-style     ranked      │
+                                     checks       + scored     │
+                                                               ├─▶ Postgres ──▶ dashboard
+  "who is behaving strangely?"                    ML-based     │
+                                                               │
+    activity log ──▶ features ──▶ 2 detectors ──▶ Anomaly[]  ──┘
+    (CloudTrail)     14, per       forest +        scored
+                  principal-hour   stats control  + explained
 ```
+
+The second pipeline exists because the first one cannot see everything. A rule
+engine reads *configuration*, and an intruder using stolen but legitimate
+credentials changes none — every call they make is one they are authorised to
+make. What gives them away is the pattern: the wrong hour, an unfamiliar
+address, a sequence that principal has never performed.
 
 ---
 
@@ -24,12 +40,12 @@ LocalStack ──▶ collectors ──▶ ResourceInventory ──▶ rule engin
 | CI (GitHub Actions) | ✅ complete |
 | 4 — Postgres persistence | ✅ complete |
 | 5 — Next.js dashboard + API | ✅ complete |
-| 6 — ML anomaly layer | planned |
+| 6 — ML anomaly layer | ✅ complete |
 | 7 — Docker + Kubernetes | planned |
 
-**285 tests** on Node's built-in test runner — no test framework dependency, and no
-Docker, LocalStack, or AWS credentials needed. A further **58 integration tests**
-(`npm run test:db`) run against a real Postgres.
+**369 tests** on Node's built-in test runner — no test framework dependency, and no
+Docker, LocalStack, Python, or AWS credentials needed. A further **58 integration
+tests** (`npm run test:db`) run against a real Postgres.
 
 ---
 
@@ -54,11 +70,16 @@ cp .env.example .env      # then set POSTGRES_PASSWORD — see that file
 docker compose up -d db
 npm run db:migrate
 npm run scan -- --save
+
+# Behavioural anomaly detection (needs Python 3.11+; touches no network at all)
+npm run ml:setup      # one-off: creates ml/.venv, installs numpy + scikit-learn
+npm run ml:pipeline   # generate a synthetic activity log, detect, evaluate
+npm run ml:save       # store the run so the dashboard can show it
 ```
 
 ---
 
-## The three CLIs
+## The CLIs
 
 ### `npm run seed` — fixtures
 
@@ -125,6 +146,33 @@ The database has **no default password**: Compose refuses to start until
 `POSTGRES_PASSWORD` is set in `.env`. That file is gitignored; `.env.example` is
 committed and carries no values.
 
+### `npm run logs:gen` / `npm run ml:*` — the anomaly layer
+
+Generates synthetic activity, scores it with both detectors, and stores the run.
+Nothing here touches AWS, LocalStack, or the network.
+
+```bash
+npm run logs:gen                          # 30 days, ~36,500 events, 5 labelled attacks
+npm run logs:gen -- --days 7 --seed demo  # a shorter, differently-seeded dataset
+npm run logs:gen -- --no-attacks          # clean traffic, to measure false positives
+
+npm run ml:setup                          # one-off: ml/.venv + numpy + scikit-learn
+npm run ml:features                       # inspect the feature matrix, no model
+npm run ml:detect                          # run both models → fixtures/anomalies.json
+npm run ml:detect -- --contamination 0.005 # a tighter alert budget
+npm run ml:evaluate                       # score both against the answer key
+npm run ml:pipeline                       # generate → detect → evaluate
+
+npm run ml:save                           # store a run in Postgres
+npm run ml:save -- --dry-run              # validate the detections file only
+npm run ml:runs                           # list stored runs
+```
+
+The generated log is **not committed**. Unlike `fixtures/inventory.json`, which needs
+LocalStack to reproduce, this is pure deterministic computation — same seed, byte-identical
+output, 190ms — so committing 27MB that any checkout can rebuild would bloat every clone.
+CI regenerates it.
+
 ---
 
 ## Rule catalogue
@@ -147,6 +195,122 @@ committed and carries no values.
 Control identifiers are recorded for orientation and should be re-verified against the
 current benchmark revision before this is pointed at a real account — CIS renumbers
 controls between major versions.
+
+---
+
+## The ML anomaly layer
+
+Unsupervised behavioural detection over CloudTrail-style activity logs: one row per
+principal per hour, fourteen features, two models.
+
+### The data
+
+There is no public dataset of labelled AWS control-plane intrusions, and there should
+not be — a real trail records who did what from where, and no organisation publishes
+one. So the activity is synthesised (`npm run logs:gen`): six principals over 30 days,
+~36,500 events, with **five labelled attacks** hidden in it.
+
+Synthetic data costs something real — a model evaluated on it is partly tested against
+the generator's own assumptions — and buys something the alternative cannot offer:
+**ground truth**. Without it, "the model flagged four things" is unfalsifiable.
+
+Two of the six principals are **controls**, and they are the point of the exercise:
+
+| Principal | Why it is hard |
+| --- | --- |
+| `cloudsentinel-backup-service` | Runs 24/7, ~600 calls a night at 02:00. Any detector keyed on "night-time" or "high volume" reports it every single day. |
+| `dave-admin` | `AttachUserPolicy` and `CreateAccessKey` are his job. Any detector keyed on "sensitive IAM action" reports him constantly. |
+
+Both must come out clean. That is the whole argument for baselining **per principal**:
+the same API call is unremarkable from Dave and alarming from an analyst who has never
+touched IAM. A model that cannot express that either misses the real escalation or
+drowns the account in noise — and both failures end with the tool switched off.
+
+The generator writes events and labels to **separate files**, and the detector never
+opens the label file. Only `ml/evaluate.py` does, after detection has finished. For an
+unsupervised model that is not a nicety: a model that could see the labels would learn
+to predict them, and the resulting accuracy would measure nothing.
+
+### Does the machine learning earn its place?
+
+It is easy to add scikit-learn, report a good number, and imply the model is
+responsible when a handful of `if` statements would have done the same. So the pipeline
+runs an **Isolation Forest** and a **dependency-free statistical control** (per-principal
+robust z-scores) over identical features, gives them **the same alert budget**, and
+reports both. Equal budget matters: the interesting question is not "which model alerts
+more" but *given a fixed amount of human attention, which spends it better?*
+
+30 days, 1,990 windows, 20 alerts per model:
+
+| | recall | control false positives | most repeated alert |
+| --- | --- | --- | --- |
+| Isolation Forest | 80% (4/5) | 10 | `dave-admin` ×7 (35%) |
+| Statistical baseline | 80% (4/5) | 13 | **`backup-service` ×12 (60%)** |
+
+Both find four of five. **The ML does not win on recall — it wins by repeating itself
+less.** The statistical model spends twelve of its twenty alerts re-reporting the same
+nightly cron job, because a per-feature threshold has no notion of recurrence. The
+forest spends three: thirty near-identical batch windows form a dense cluster, and a
+point in a dense cluster is not *isolated*. That is the difference between a tool
+somebody keeps reading and one they mute in week two — and a muted detector's real
+recall is zero, whatever its recall column says.
+
+The fifth scenario (`off_hours_access`) is missed by both, **by design**. Ordinary work,
+usual address, usual region — only the clock is wrong. It is the deliberately weak
+signal, included to test whether one weak feature is enough. It is not, and the
+evaluation reports that rather than tuning until it disappears.
+
+> ⚠️ These figures come from synthetic data generated by this project's own rules. They
+> demonstrate the pipeline works end to end. They are **not** a claim about accuracy on
+> a real AWS account. `ml/evaluate.py` prints this caveat itself, so the number cannot
+> travel without it.
+
+### Three things that took a second attempt
+
+Each was found by watching the first version fail, and each is documented where it
+lives rather than only here.
+
+**Volume had to be measured against the hour of day.** The first `volume_ratio` divided
+by the principal's overall median hourly volume — so the backup role's 02:00 batch, at
+six times its own average, scored ~6 every night for a month and out-ranked two real
+attacks. Comparing an hour against *the same hour on other days* removed the entire
+class of false positive.
+
+**Rates over small windows are noise.** A four-call hour with one permission error has a
+25% error rate, which against a 1% background looks catastrophic and is one stale
+script. Every rate is now shrunk toward the principal's own prior
+(`(observed + k·prior) / (n + k)`, k = 10): thin evidence barely moves the estimate,
+while a 31-call enumeration burst still reads as 0.64. This alone took the forest from
+60% to 80% recall.
+
+**A single worst feature cannot rank anything.** Several features are near-binary —
+`hour_rarity` is ~0 in-hours and ~1 out-of-hours — so scoring by the max produced ties
+across every off-hours window, and array order decided which ones got reported. The
+baseline now sums its three worst features, each capped at 25σ so one near-constant
+column cannot dominate.
+
+### Explaining a model that cannot explain itself
+
+An Isolation Forest score is an average path length across random trees. There is no
+honest way to attribute it to a single feature, and an alert reading *"principal X,
+03:00, score 99.9"* gives an analyst nowhere to start — after a few of those they stop
+reading alerts.
+
+So the forest decides **what** to flag and the statistical model explains **why** it is
+unusual: every detection carries the three most extreme features in plain language
+("call volume was 22× this principal's normal hour, against 322 distinct objects"). The
+dashboard states that this is supporting evidence rather than the forest's internal
+reasoning, because the alternative is a nicer story that is not true.
+
+### Anomalies are not findings
+
+They are stored in separate tables and behave differently on purpose. A finding is a
+*condition that persists* — a bucket stays public until someone fixes it — so `findings`
+carries `first_seen_at`, `last_seen_at` and an open/resolved status.
+
+An anomaly is an observation about **one specific past hour**. It cannot be fixed, and it
+cannot recur: a later strange hour is a different hour. So an anomaly row is immutable
+and has no status. Giving it a lifecycle would have looked consistent and been wrong.
 
 ---
 
@@ -200,7 +364,11 @@ instead of destroying the scan — and the gap is still reported.
 lib/
   aws/localstack.ts       client construction; refuses non-loopback endpoints
   types/resource.ts       the normalized resource model (types only)
+  types/cloudtrail.ts     activity-log + ground-truth label model (types only)
+  types/anomaly.ts        what the Python layer returns (types only)
   collectors/             s3.ts, ec2.ts, iam.ts, inventory.ts — read-only AWS reads
+  logs/generator.ts       synthetic CloudTrail, 5 labelled attacks, 2 controls
+  anomalies/ingest.ts     validates the detections file at the language boundary
   rules/
     types.ts              rule/finding vocabulary, severity weights
     policy.ts             shared IAM/S3 policy analysis
@@ -214,6 +382,7 @@ lib/
     users.ts              accounts, login, session revocation
     triage.ts             triage state + append-only audit trail
     dashboard.ts          every read query the dashboard makes
+    anomalies.ts          detection runs and their alerts
   auth/
     password.ts           scrypt hashing, decoy hash, rehash-on-login
     jwt.ts                HS256 on node:crypto; rejects alg:none
@@ -225,9 +394,16 @@ lib/
   ui/format.ts            severity colours, dates, triage labels
   util/concurrency.ts     bounded parallelism
   util/env.ts             .env loading
+  util/random.ts          seeded PRNG — synthetic data only, never for secrets
+ml/
+  requirements.txt        numpy, scikit-learn (installed into a local venv)
+  features.py             14 behavioural features, leave-one-window-out profiling
+  baseline.py             robust z-score control — no ML, no dependencies
+  detect.py               Isolation Forest, shared alert budget, evidence
+  evaluate.py             the ONLY module permitted to read the labels
 db/migrations/            the schema, append-only
 app/
-  (app)/                  the authenticated dashboard: overview, findings, scans
+  (app)/                  the dashboard: overview, findings, anomalies, scans
   login/                  the only unauthenticated page
   components/             TriageControl, LogoutButton (client components)
   api/                    auth, findings, scans, summary, triage
@@ -237,8 +413,12 @@ scripts/
   scan.ts                 npm run scan
   db.ts                   npm run db:migrate / db:status
   user.ts                 npm run user:create / list / passwd / revoke / delete
+  gen-logs.ts             npm run logs:gen
+  ml.ts                   npm run ml:setup / features / detect / evaluate
+  anomalies.ts            npm run ml:save / ml:runs
 docker-compose.yml        local Postgres
 fixtures/inventory.json   committed snapshot, so everything above is testable offline
+fixtures/cloudtrail.json  NOT committed — deterministic, rebuilt by npm run logs:gen
 ```
 
 ---
@@ -261,14 +441,23 @@ npm run dev                                      # http://localhost:3000
 `CLOUDSENTINEL_JWT_SECRET` must be set in `.env` — see `.env.example`. There is no
 default value anywhere in the code, and the app refuses to start without one.
 
-Four pages, all server-rendered:
+Six pages, all server-rendered:
 
 | Page | Shows |
 | --- | --- |
 | `/` | Risk score, severity breakdown, what is hidden by triage, recent scans |
 | `/findings` | Filterable list, most severe and longest-standing first |
 | `/findings/<id>` | Evidence, remediation, every scan that reported it, triage |
+| `/anomalies` | Flagged principal-hours, both models' scores, where alerts landed |
+| `/anomalies/<id>` | All 14 features, the evidence, the events involved |
 | `/scans` | Scan history with new-finding counts and collection errors |
+
+The anomalies pages always show **both** models' scores side by side rather than a
+single verdict, because the disagreement is the informative part — a window both
+models flagged is a stronger signal than one only the forest isolated. `/anomalies`
+also shows how the alerts are distributed across principals: a run where one
+principal accounts for most of them is a run whose reader will start skipping it,
+and that is the failure mode that quietly turns a detector's real recall to zero.
 
 ### Authentication
 
