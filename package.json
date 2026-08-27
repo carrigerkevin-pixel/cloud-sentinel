@@ -17,6 +17,8 @@
     "ml:features": "node scripts/ml.ts features",
     "ml:detect": "node scripts/ml.ts detect",
     "ml:evaluate": "node scripts/ml.ts evaluate",
+    "ml:save": "node scripts/anomalies.ts save",
+    "ml:runs": "node scripts/anomalies.ts runs",
     "ml:pipeline": "npm run logs:gen && npm run ml:detect && npm run ml:evaluate",
     "scan": "node scripts/scan.ts",
     "scan:fixture": "node scripts/scan.ts --input fixtures/inventory.json",
