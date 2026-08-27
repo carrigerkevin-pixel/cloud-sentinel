@@ -42,10 +42,14 @@ address, a sequence that principal has never performed.
 | 5 — Next.js dashboard + API | ✅ complete |
 | 6 — ML anomaly layer | ✅ complete |
 | 7 — Docker + Kubernetes | ✅ complete |
+| 8 — Security hardening | ✅ complete |
 
-**375 tests** on Node's built-in test runner — no test framework dependency, and no
+**388 tests** on Node's built-in test runner — no test framework dependency, and no
 Docker, LocalStack, Python, or AWS credentials needed. A further **76 integration
 tests** (`npm run test:db`) run against a real Postgres.
+
+A guided tour of what the project does and why it does it that way is in
+**[docs/demo.md](docs/demo.md)**.
 
 ---
 
@@ -483,6 +487,44 @@ exists to find in other people's infrastructure.
 
 ---
 
+## Security
+
+CloudSentinel audits other people's configurations, so its own is fair game.
+**[SECURITY.md](SECURITY.md)** carries the full threat model, the disclosure
+process, and an honest list of known limitations; the short version:
+
+| Concern | What is actually done |
+| --- | --- |
+| Passwords | scrypt (N=16384), per-user salt, cost parameters stored in the hash; a decoy hash is verified when no account matches, so an unknown email costs the same time as a known one |
+| Sessions | HS256 written on `node:crypto`; the algorithm is fixed in code and never read from the token, so `alg:none` and confusion forgeries are rejected before any claim is trusted |
+| Revocation | A `token_version` claim compared against the database per request — a demoted admin loses access on their *next* request, not when their token expires |
+| Cookie | `httpOnly` (unreadable to injected script), `SameSite=strict`, `Secure` in production |
+| CSRF | The `SameSite` cookie, plus a server-side `Origin` check on every state-changing route — because the first layer is enforced entirely by the client |
+| XSS | A per-response nonce CSP. No inline script runs without it, and `'unsafe-inline'` appears nowhere in `script-src` |
+| SQL | Every query parameterised — resource names and ARNs come from an environment the tool does not control |
+| Containers | Non-root, read-only root filesystem, no npm, no AWS SDK, no `scripts/` in the web image |
+| Network | Deny-by-default; the dashboard's egress reaches DNS and the database and nothing else |
+| Supply chain | `npm audit` on production dependencies, and both images scanned for fixable critical CVEs |
+
+None of that is asserted on trust. CI proves the NetworkPolicy is *enforced*
+rather than merely applied, and reads back `pg_stat_ssl` to confirm the database
+connections are genuinely encrypted — because a control that is believed to be
+active and is in fact absent is worse than a known gap, and is exactly the
+failure this project exists to find elsewhere.
+
+Two consequences worth knowing when using the API by hand:
+
+```bash
+# Reads work normally.
+curl -b cookies.txt http://localhost:30080/api/findings
+
+# Writes are refused without an Origin header — deliberately, since browsers
+# always send one and its absence means the caller is not a browser.
+curl -b cookies.txt -X POST http://localhost:30080/api/auth/logout   -H "Origin: http://localhost:30080"
+```
+
+---
+
 ## Layout
 
 ```
@@ -513,7 +555,8 @@ lib/
     jwt.ts                HS256 on node:crypto; rejects alg:none
     session.ts            httpOnly SameSite=strict cookie, per-request checks
   api/
-    http.ts               JSON helpers, requireUser / requireAdmin guards
+    http.ts               JSON helpers, body parsing, the Origin check (pure)
+    guards.ts             requireUser / requireAdmin — separate, needs Next
     rate-limit.ts         login throttling
     finding-id.ts         base64url ids for URLs (real ids contain slashes)
   ui/format.ts            severity colours, dates, triage labels
@@ -542,6 +585,7 @@ scripts/
   ml.ts                   npm run ml:setup / features / detect / evaluate
   anomalies.ts            npm run ml:save / ml:runs
   k8s.ts                  npm run k8s:cluster / build / up / user / down
+proxy.ts                  per-response CSP nonce (and nothing else)
 Dockerfile                multi-stage: `app` (dashboard) and `tools` (CLIs)
 k8s/
   00-namespace.yaml       namespace + restricted Pod Security Standard
@@ -552,6 +596,8 @@ k8s/
   kind-cluster.yaml       the local cluster definition
   test/netpol-probe.yaml  proves the network policy is enforced, not just stored
 docker-compose.yml        local Postgres
+SECURITY.md               threat model, disclosure policy, known limitations
+docs/demo.md              the walkthrough script for the demo recording
 fixtures/inventory.json   committed snapshot, so everything above is testable offline
 fixtures/cloudtrail.json  NOT committed — deterministic, rebuilt by npm run logs:gen
 ```
