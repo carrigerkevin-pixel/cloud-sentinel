@@ -39,13 +39,14 @@
  */
 
 import { decodeFindingId } from "../../../../../lib/api/finding-id.ts";
+import { requireAdmin } from "../../../../../lib/api/guards.ts";
 import {
   apiError,
+  checkSameOrigin,
   invalidInput,
   json,
   notFound,
   readJson,
-  requireAdmin,
 } from "../../../../../lib/api/http.ts";
 import {
   isTriageState,
@@ -60,6 +61,13 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
+  // Checked before the session is even looked at. This is the endpoint a
+  // cross-site request forgery would actually want: it needs an authenticated
+  // admin, and suppressing a finding removes a real problem from the default
+  // view while the scanner goes on reporting it.
+  const crossSite = checkSameOrigin(request);
+  if (crossSite) return crossSite;
+
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
 

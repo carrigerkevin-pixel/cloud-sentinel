@@ -1,27 +1,38 @@
 /**
  * CloudSentinel — shared HTTP helpers for the API routes.
  *
- * One place for JSON responses, error shapes, and the authentication and
- * authorization guards every protected route begins with.
+ * One place for JSON responses, error shapes, request-body parsing, and the
+ * cross-site request check that every state-changing route begins with.
  *
- * Where it sits in the architecture:
+ * Where it sits in the architecture: a leaf. Everything here is a pure function
+ * of its arguments, so it depends on nothing else in the project.
  *
- *   app/api/<name>/route.ts --> [ this file ] --> lib/auth/session.ts --> Postgres
+ *   app/api/<name>/route.ts --> [ this file ]
  *
- * ## Why the guards live here rather than in middleware
+ * ## Why the session guards are NOT in this file
  *
- * Next.js middleware is the obvious place to put an auth check, and it is the
- * wrong one for this application. Middleware runs on the Edge runtime, which
- * has no `node:crypto` and no TCP sockets — so it can neither verify an HS256
- * signature with the code in lib/auth/jwt.ts nor make the database round trip
- * that `userForClaims` needs to catch a revoked session. A middleware check
- * would end up trusting the token's own claims, which is exactly the shortcut
- * this project set out not to take.
+ * `requireUser()` and `requireAdmin()` live in lib/api/guards.ts. The split is
+ * not organisational tidiness — it is a module boundary with a purpose.
  *
- * The trade-off is that protection is opt-in per route rather than applied by
- * default, and a new route that forgets {@link requireUser} is unprotected. The
- * mitigation is that there is exactly one way to write a protected route and
- * every existing route follows it, so an unguarded one is visible in review.
+ * Everything in this file is a pure function of its arguments: it reads no
+ * cookie, opens no connection, and imports nothing that needs a Next.js
+ * runtime. The guards cannot be, because they must read the session cookie via
+ * `next/headers` and then query Postgres.
+ *
+ * Keeping them together made this file untestable. A test importing it to check
+ * one header comparison pulled in `next/headers`, which does not resolve
+ * outside a Next server, and the whole suite failed to load. That is the same
+ * class of mistake phase 5 hit from the other direction, when a client
+ * component imported from lib/db/triage.ts and the bundler tried to put the
+ * PostgreSQL driver into a browser bundle — a module that mixes a pure concern
+ * with a runtime-bound one drags the runtime everywhere it is used.
+ *
+ * The guards are deliberately NOT re-exported from here for convenience. That
+ * was tried and it silently undid the whole split: a re-export is still an
+ * import, so `http.ts` went on pulling `next/headers` into everything that
+ * touched it and the tests failed exactly as before. A module boundary that
+ * exists to keep a dependency out cannot also forward that dependency. Routes
+ * import guards from lib/api/guards.ts directly.
  *
  * ## Why error responses are vague
  *
@@ -31,9 +42,6 @@
  * reconnaissance. The detail goes to the server log, where the operator can see
  * it and an attacker cannot.
  */
-
-import { currentUser } from "../auth/session.ts";
-import type { User } from "../db/users.ts";
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -107,67 +115,116 @@ export function notFound(message = "Not found."): Response {
 }
 
 // ---------------------------------------------------------------------------
-// Guards
+// Cross-site request forgery
 // ---------------------------------------------------------------------------
 
 /**
- * The result of a guard: either an authenticated user, or the response to
- * return immediately.
+ * Rejects a state-changing request that did not originate from this site.
  *
- * A discriminated union rather than a thrown exception, because TypeScript then
- * refuses to let a route reach `result.user` without having handled
- * `result.response` first. A guard that can be ignored by forgetting a
- * `try`/`catch` is a guard that eventually is.
+ * ## What this defends against
+ *
+ * A cross-site request forgery works by making the *victim's own browser* issue
+ * a request. A hostile page submits a form or fires a `fetch` at this API, the
+ * browser helpfully attaches the session cookie because cookies are scoped to
+ * the destination rather than the initiator, and the request arrives fully
+ * authenticated. In this application the prize is the triage endpoint: an
+ * attacker who can get a signed-in administrator to visit a page can suppress
+ * findings on their behalf, quietly removing real problems from the default
+ * view while the scanner goes on reporting the bucket is public.
+ *
+ * ## Why this exists when the cookie is already `SameSite=strict`
+ *
+ * `SameSite=strict` (see lib/auth/session.ts) is the primary defence and it is a
+ * good one: the browser will not attach the session cookie to a request started
+ * by another site at all. This check is deliberately a second layer, because the
+ * first one is enforced entirely by the client and this project does not get to
+ * choose the client.
+ *
+ * Three concrete gaps it covers:
+ *
+ *   - A browser that does not implement `SameSite`, or a request made by
+ *     something that is not a browser and does not honour it.
+ *   - A same-site attacker. `SameSite` is *site*, not *origin* — it uses the
+ *     registrable domain, so a hostile page on a sibling subdomain, or one
+ *     served over plain HTTP against an HTTPS deployment, counts as same-site
+ *     and its requests carry the cookie. `Origin` distinguishes those; the
+ *     cookie attribute cannot.
+ *   - A future change that relaxes the cookie to `SameSite=lax` — under which
+ *     top-level form posts from another site do carry the cookie — without
+ *     anyone noticing the protection was load-bearing.
+ *
+ * ## Why `Origin` and not `Referer`
+ *
+ * `Origin` is sent on exactly the requests that matter, contains only the
+ * scheme, host and port, and cannot be suppressed by a privacy setting the way
+ * `Referer` routinely is. Validating `Referer` means either rejecting the many
+ * legitimate requests that omit it or accepting its absence, which reduces the
+ * check to nothing.
+ *
+ * ## The absent-header decision
+ *
+ * A missing `Origin` is **rejected**, not allowed through. Browsers always send
+ * it on the cross-origin and `POST` requests this guards, so absence means the
+ * caller is not a browser doing an ordinary form submission — a script, a
+ * command-line client, or something forging a request. Allowing it would leave
+ * an opt-out that consists of simply not sending a header, which is not a
+ * control at all. The cost is that `curl` must pass `-H "Origin: <site>"` to
+ * call a write endpoint, which is documented in the README.
+ *
+ * @param request - the incoming request. Its `Origin` header is compared with
+ *   the `Host` this request was actually addressed to, so no environment
+ *   variable has to be kept in step with where the app is deployed — the
+ *   comparison is self-referential and correct on localhost, on a NodePort, and
+ *   behind a domain name without configuration.
+ * @returns `null` when the request may proceed, or the 403 response to return.
  */
-export type Guarded =
-  | { ok: true; user: User }
-  | { ok: false; response: Response };
-
-/**
- * Requires any signed-in user.
- *
- * Every read endpoint starts with this. It performs the full check —
- * signature, expiry, and a database lookup confirming the session has not been
- * revoked and the account still exists.
- *
- * @example
- * const guard = await requireUser();
- * if (!guard.ok) return guard.response;
- * // guard.user is available and current from here on.
- */
-export async function requireUser(): Promise<Guarded> {
-  const user = await currentUser();
-  if (!user) return { ok: false, response: unauthenticated() };
-  return { ok: true, user };
-}
-
-/**
- * Requires a signed-in administrator.
- *
- * Used by every endpoint that changes state — currently the triage routes.
- *
- * The role is taken from the freshly-loaded database record, not from the
- * token's claim. That distinction is the whole point: `userForClaims` already
- * refuses a token whose role no longer matches the database, so a demoted
- * administrator cannot reach this at all, and this function cannot be fooled by
- * a stale claim even if that check were ever relaxed.
- *
- * An authenticated non-admin gets 403 rather than 401, because 401 would send
- * the client back to a login page that cannot help — they are already signed
- * in, and signing in again will not grant the role.
- */
-export async function requireAdmin(): Promise<Guarded> {
-  const guard = await requireUser();
-  if (!guard.ok) return guard;
-
-  if (guard.user.role !== "admin") {
-    return {
-      ok: false,
-      response: forbidden("Changing triage state requires an admin account."),
-    };
+export function checkSameOrigin(request: Request): Response | null {
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    return forbidden(
+      "This request is missing an Origin header and was refused. " +
+        "State-changing requests must be made from the dashboard.",
+    );
   }
 
-  return guard;
+  // `Host` is what the client asked for, which is the same value the browser
+  // used to build `Origin`, so the two are directly comparable. Taking the
+  // expected host from the request rather than from configuration is what makes
+  // this work unchanged across localhost, the Kubernetes NodePort, and any
+  // hostname a real deployment uses.
+  //
+  // Note the trust boundary: behind a reverse proxy, `Host` is whatever the
+  // proxy forwards, so this check is only as trustworthy as that proxy. That is
+  // the same assumption `lib/api/rate-limit.ts` documents for
+  // `x-forwarded-for`, and it is acceptable for the same reason — a proxy that
+  // forwards an attacker-chosen Host is already misconfigured in a way that
+  // breaks more than this.
+  const host = request.headers.get("host");
+  if (!host) {
+    return forbidden("This request is missing a Host header and was refused.");
+  }
+
+  let originHost: string;
+  try {
+    // Parsed rather than string-compared. `"https://example.com"` and
+    // `"https://example.com:443"` name the same origin, and a substring test
+    // would also accept `"https://example.com.attacker.test"` — a classic way
+    // for an origin check to look right and do nothing.
+    originHost = new URL(origin).host;
+  } catch {
+    return forbidden("This request has a malformed Origin header.");
+  }
+
+  if (originHost !== host) {
+    // The mismatch is not echoed back. Reflecting the value an attacker sent
+    // into a response body is a habit worth not having, and the operator can
+    // see the request in the access log.
+    return forbidden(
+      "This request came from another site and was refused.",
+    );
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------

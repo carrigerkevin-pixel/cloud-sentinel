@@ -32,7 +32,8 @@
  * a stale filter in it should still show findings, not an error page.
  */
 
-import { json, requireUser } from "../../../lib/api/http.ts";
+import { requireUser } from "../../../lib/api/guards.ts";
+import { json } from "../../../lib/api/http.ts";
 import {
   listFindings,
   MAX_PAGE_SIZE,

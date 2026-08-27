@@ -39,6 +39,7 @@
  */
 
 import {
+  checkSameOrigin,
   apiError,
   invalidInput,
   json,
@@ -66,6 +67,13 @@ const MAX_PASSWORD_LENGTH = 512;
 const MAX_EMAIL_LENGTH = 320;
 
 export async function POST(request: Request): Promise<Response> {
+  // Refuses a login attempt initiated by another site. Logging a victim in as
+  // an account the attacker controls ("login CSRF") is a real technique: the
+  // victim then works inside the attacker's session, and anything they triage
+  // or view is recorded against it.
+  const crossSite = checkSameOrigin(request);
+  if (crossSite) return crossSite;
+
   const key = clientKey(request);
 
   // Checked first, deliberately: before the body is parsed and long before

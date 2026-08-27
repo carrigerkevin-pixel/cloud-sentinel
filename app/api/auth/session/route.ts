@@ -21,7 +21,8 @@
  * signed in, and as what", rather than a reflection of what the cookie claims.
  */
 
-import { json, requireUser } from "../../../../lib/api/http.ts";
+import { requireUser } from "../../../../lib/api/guards.ts";
+import { json } from "../../../../lib/api/http.ts";
 
 export async function GET(): Promise<Response> {
   const guard = await requireUser();

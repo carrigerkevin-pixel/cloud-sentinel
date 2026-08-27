@@ -19,7 +19,8 @@
  * tool must not reward.
  */
 
-import { json, requireUser } from "../../../lib/api/http.ts";
+import { requireUser } from "../../../lib/api/guards.ts";
+import { json } from "../../../lib/api/http.ts";
 import { dashboardSummary } from "../../../lib/db/dashboard.ts";
 
 export async function GET(): Promise<Response> {

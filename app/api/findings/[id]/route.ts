@@ -16,7 +16,8 @@
  */
 
 import { decodeFindingId } from "../../../../lib/api/finding-id.ts";
-import { json, notFound, requireUser } from "../../../../lib/api/http.ts";
+import { requireUser } from "../../../../lib/api/guards.ts";
+import { json, notFound } from "../../../../lib/api/http.ts";
 import { findingDetail } from "../../../../lib/db/dashboard.ts";
 import { triageHistory } from "../../../../lib/db/triage.ts";
 

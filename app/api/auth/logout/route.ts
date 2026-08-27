@@ -36,13 +36,22 @@
  * session" are genuinely different actions, and this route is only the first.
  */
 
-import { json } from "../../../../lib/api/http.ts";
+import { checkSameOrigin, json } from "../../../../lib/api/http.ts";
 import { clearSession } from "../../../../lib/auth/session.ts";
 
-export async function POST(): Promise<Response> {
-  // No guard. Logging out an already-logged-out client is harmless, and
-  // requiring a valid session to clear a cookie would leave a user holding an
-  // expired token with no way to tidy up after it.
+export async function POST(request: Request): Promise<Response> {
+  // An origin check, but no *authentication* guard. Logging out an
+  // already-logged-out client is harmless, and requiring a valid session to
+  // clear a cookie would leave a user holding an expired token with no way to
+  // tidy up after it.
+  //
+  // The origin check still earns its place. Forced logout is a nuisance attack
+  // rather than a breach, but it is a real one: a hostile page that can sign an
+  // operator out of their monitoring dashboard on every visit is a denial of
+  // service against the person watching for alerts.
+  const crossSite = checkSameOrigin(request);
+  if (crossSite) return crossSite;
+
   await clearSession();
 
   return json({ ok: true });

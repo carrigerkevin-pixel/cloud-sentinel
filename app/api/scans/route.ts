@@ -19,7 +19,8 @@
  * from one where all fourteen were.
  */
 
-import { json, requireUser } from "../../../lib/api/http.ts";
+import { requireUser } from "../../../lib/api/guards.ts";
+import { json } from "../../../lib/api/http.ts";
 import { MAX_PAGE_SIZE, scanHistory } from "../../../lib/db/dashboard.ts";
 
 export async function GET(request: Request): Promise<Response> {
