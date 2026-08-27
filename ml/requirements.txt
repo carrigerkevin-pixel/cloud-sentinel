@@ -1,0 +1,34 @@
+# CloudSentinel — Python dependencies for the ML anomaly layer.
+#
+# Installed into a project-local virtual environment by `npm run ml:setup`,
+# which creates ml/.venv and installs this file into it. The venv is gitignored;
+# this file is the thing that is committed, so any checkout can rebuild the
+# environment.
+#
+# Why a virtual environment rather than a global pip install: the rest of this
+# machine has its own Python packages, and a security tool that scatters
+# dependencies into the user's global site-packages is doing the sort of thing
+# it would flag in somebody else's code. A venv keeps the ML layer's tree
+# isolated and disposable — deleting ml/.venv costs nothing but a reinstall.
+#
+# Why the version floors are loose: this is a portfolio project that needs to
+# still install in a year, and hard pins rot. The floors below are real
+# constraints, though — NumPy 2 changed several APIs used in features.py, and
+# scikit-learn moved `IsolationForest`'s scoring conventions before 1.5.
+#
+# SECURITY: three direct dependencies, all long-established and widely audited.
+# Every one of them is a supply-chain surface, which is why the pure-statistics
+# baseline detector in baseline.py deliberately uses NumPy only — if
+# scikit-learn ever became unavailable or untrusted, the pipeline still produces
+# a working detector and honest numbers, just without the Isolation Forest.
+
+# Array maths. Used by every module here.
+numpy>=2.0
+
+# Isolation Forest, the model this layer's headline result comes from.
+scikit-learn>=1.5
+
+# Pulled in by scikit-learn regardless; named explicitly so `pip install` on a
+# fresh machine reports a clear version conflict rather than resolving one
+# silently.
+scipy>=1.10
