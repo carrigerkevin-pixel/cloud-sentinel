@@ -44,7 +44,7 @@ address, a sequence that principal has never performed.
 | 7 — Docker + Kubernetes | planned |
 
 **369 tests** on Node's built-in test runner — no test framework dependency, and no
-Docker, LocalStack, Python, or AWS credentials needed. A further **58 integration
+Docker, LocalStack, Python, or AWS credentials needed. A further **76 integration
 tests** (`npm run test:db`) run against a real Postgres.
 
 ---

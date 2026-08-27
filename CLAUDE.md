@@ -408,6 +408,14 @@ number cannot be quoted without it.
    and stores the detections in Postgres to exercise migration 0003.
 ✅ `npm test` — **369 tests** (up from 285), still no database, no Docker and no
    Python required.
+✅ `npm run test:db` — **76 integration tests** (up from 58). The new file is
+   `lib/db/anomalies.dbtest.ts`, on its own `cloudsentinel_anomtest` database —
+   `node --test` runs files concurrently, so a shared name would let two suites
+   truncate each other's tables mid-assertion. It covers what the pure ingest
+   tests cannot: that the `TEXT[]` and `JSONB` columns round-trip, that
+   `NUMERIC` scores come back as numbers rather than strings (`"99.95" >
+   "100.00"` is true in string comparison, which would sort the dashboard
+   wrongly), and that a failed insert rolls the entire run back.
 
 ### Getting the dashboard running
 ```
