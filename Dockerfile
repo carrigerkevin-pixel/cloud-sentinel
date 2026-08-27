@@ -136,6 +136,25 @@ FROM base AS app
 
 ENV NODE_ENV=production
 
+# SECURITY: remove npm from the runtime image.
+#
+# This image starts `node server.js` directly and never invokes a package
+# manager, so npm is dead weight in it — and dead weight with unusual powers. It
+# is a program whose entire purpose is to fetch remote code and execute install
+# scripts, which is precisely the capability an intruder who lands in a
+# container is looking for. Removing it is the same argument that keeps
+# `scripts/` and the AWS SDK out of this image, applied to the tooling that
+# comes with the base image rather than to the project's own code.
+#
+# It also removes real, currently-published vulnerabilities. npm vendors its own
+# dependencies, and the CI image scan flagged a fixable CRITICAL in the `tar`
+# copy bundled inside it (CVE-2026-59873) — a package this application never
+# calls, reachable only through a tool it does not use. Deleting the tool is a
+# better fix than tracking upstream's patch cadence for it.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+           /usr/local/bin/npm \
+           /usr/local/bin/npx
+
 # SECURITY: run as an unprivileged user.
 #
 # A container's root is the host's root as far as several classes of container
@@ -234,7 +253,16 @@ RUN npm ci --omit=dev \
         node_modules/react-dom \
         node_modules/styled-jsx \
         node_modules/@swc \
-        node_modules/caniuse-lite
+        node_modules/caniuse-lite \
+    # And npm itself, once it has finished installing. Every command this image
+    # runs is `node scripts/<something>.ts`; none of them shells out to a
+    # package manager. The reasoning is the same as in the `app` stage above —
+    # a tool for fetching and executing remote code has no business remaining in
+    # a container that only migrates a database — and it removes the fixable
+    # CRITICAL that CI's image scan finds in npm's vendored copy of `tar`.
+    && rm -rf /usr/local/lib/node_modules/npm \
+              /usr/local/bin/npm \
+              /usr/local/bin/npx
 
 # Only the directories the CLIs actually read. Listing them explicitly rather
 # than copying the whole tree is deliberate: it means a new top-level directory

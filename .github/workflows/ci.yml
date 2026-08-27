@@ -110,6 +110,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Fails the build on a known high-severity vulnerability in a dependency
+      # that actually ships.
+      #
+      # `--omit=dev` is the important flag. The development tree includes
+      # TypeScript, ESLint and the build toolchain, none of which runs in
+      # production or processes untrusted input, and an advisory against one of
+      # them is not a vulnerability in the deployed application. Auditing
+      # everything would mean routinely overriding the gate, which is the same
+      # as not having one.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       # Next.js generates `next-env.d.ts` and `.next/types/` — which define
       # globals such as `LayoutProps` that app/layout.tsx uses — and both are
       # gitignored, so neither exists in a fresh checkout. Without this step the
@@ -352,6 +364,53 @@ jobs:
           test "$code" = "401" || { echo "expected 401 from /api/findings, got $code"; exit 1; }
 
           docker rm -f smoke-app smoke-db
+
+      # Scans both images for known vulnerabilities.
+      #
+      # Run from Trivy's own image rather than through a marketplace action —
+      # the same reasoning as installing kind by hand below: one fewer
+      # third-party action in the supply chain of a project about supply chains.
+      #
+      # The images are handed over as tarballs from `docker save` rather than by
+      # mounting the Docker socket into the scanner. Mounting the socket grants
+      # the container root-equivalent control of the host daemon, which is a
+      # large privilege to hand a tool purely so it can read a filesystem layer.
+      # A tarball is the same data with none of the authority.
+      #
+      # `--ignore-unfixed` and `--severity CRITICAL` together are what make this
+      # a gate rather than a nuisance. A critical vulnerability *with a fix
+      # available* is actionable — rebuild on a newer base image — so failing
+      # the build is a fair response. A critical one with no fix yet published
+      # cannot be acted on, and turning the repository red for something nobody
+      # can do anything about trains people to ignore the signal, which costs
+      # more than it saves. Everything below CRITICAL is reported in the step
+      # above without failing, so it is visible without being noise.
+      - name: Scan the images for vulnerabilities (report)
+        run: |
+          docker save cloudsentinel:app   -o /tmp/app.tar
+          docker save cloudsentinel:tools -o /tmp/tools.tar
+          for image in app tools; do
+            echo "::group::trivy report - cloudsentinel:$image"
+            docker run --rm -v /tmp:/scan aquasec/trivy:latest image \
+              --input "/scan/$image.tar" \
+              --scanners vuln \
+              --severity MEDIUM,HIGH,CRITICAL \
+              --exit-code 0 \
+              --no-progress
+            echo "::endgroup::"
+          done
+
+      - name: Fail on fixable critical vulnerabilities
+        run: |
+          for image in app tools; do
+            docker run --rm -v /tmp:/scan aquasec/trivy:latest image \
+              --input "/scan/$image.tar" \
+              --scanners vuln \
+              --severity CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --no-progress
+          done
 
       # Installed directly rather than through a third-party action, and pinned
       # to a version. One fewer action in the supply chain of a project about
