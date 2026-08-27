@@ -1,0 +1,106 @@
+# CloudSentinel — Docker build context exclusions.
+#
+# What this is: the list of paths Docker must NOT send to the daemon when
+# building an image. Everything not excluded here is uploaded as the build
+# context and is a candidate for ending up inside an image layer.
+#
+# Where it fits: it guards the boundary between the working tree and the
+# container images defined in Dockerfile. Nothing else reads it.
+#
+# This file has two jobs, and the first one is security.
+#
+# 1. SECURITY — keep secrets out of image layers.
+#
+#    An image layer is immutable and public once pushed. Deleting a file in a
+#    later `RUN` does not remove it from the layer that added it: `docker
+#    history` and any layer-extraction tool will still recover it. So a secret
+#    that enters the build context can never be taken back out of an image that
+#    copied it.
+#
+#    `.env` holds POSTGRES_PASSWORD and CLOUDSENTINEL_JWT_SECRET — the JWT
+#    secret being the single most sensitive value in the project, since anyone
+#    holding it can forge a token claiming to be any user with any role. The
+#    Dockerfile uses `COPY . .`, so without the rule below that file would be
+#    baked into every build made on this machine. Configuration reaches the
+#    containers at *runtime* instead, from a Kubernetes Secret.
+#
+#    Note that `.env*` also covers `.env.local`, `.env.production` and the rest
+#    of the family, while `!.env.example` lets the committed no-values template
+#    through so the image documents what it expects.
+#
+# 2. Size and cache stability — keep the context small.
+#
+#    Every file in the context is hashed on every build. `node_modules/` alone
+#    is hundreds of megabytes that `npm ci` reproduces exactly from
+#    package-lock.json anyway, and `ml/.venv/` is a machine-specific tree of
+#    compiled wheels that would not even run on the Linux base image. Including
+#    either would slow every build and invalidate the cache constantly.
+
+# ---------------------------------------------------------------------------
+# SECURITY: credentials and keys. Keep this block first — it is the one that
+# matters if the rest of the file is ever mangled.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+k8s/tls/
+
+# ---------------------------------------------------------------------------
+# Dependency trees — reinstalled inside the image from their lockfiles.
+# ---------------------------------------------------------------------------
+node_modules
+ml/.venv
+__pycache__
+*.pyc
+
+# ---------------------------------------------------------------------------
+# Build output. The image builds its own; copying a Windows-built .next into a
+# Linux image is how a stale or platform-wrong bundle gets shipped.
+# ---------------------------------------------------------------------------
+.next
+out
+build
+*.tsbuildinfo
+next-env.d.ts
+
+# ---------------------------------------------------------------------------
+# Version control and editor state. `.git` in particular is both large and a
+# disclosure risk: it carries the full history, including any file that was
+# committed and later removed.
+# ---------------------------------------------------------------------------
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# ---------------------------------------------------------------------------
+# Tests and generated fixtures.
+#
+# The test suite runs in CI, not in the image, so shipping it only enlarges the
+# attack surface of the running container for no benefit.
+#
+# The synthetic activity log is excluded for a different reason: it is derived
+# data. `npm run logs:gen` rebuilds it deterministically in about 200ms, so a
+# copy inside the image would be tens of megabytes of something the image can
+# already produce — and a stale one at that.
+# ---------------------------------------------------------------------------
+**/*.test.ts
+**/*.dbtest.ts
+fixtures/cloudtrail.json
+fixtures/cloudtrail-labels.json
+fixtures/anomalies.json
+
+# ---------------------------------------------------------------------------
+# Documentation and local infrastructure definitions. The images do not read
+# them, and a change to a README should not invalidate a build cache.
+# ---------------------------------------------------------------------------
+README.md
+CLAUDE.md
+AGENTS.md
+docker-compose.yml
+Dockerfile
+.dockerignore
