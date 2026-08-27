@@ -32,6 +32,31 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+/**
+ * Render every page on request rather than prerendering any at build time.
+ *
+ * This exists to make the Content-Security-Policy in proxy.ts work, and the
+ * incompatibility is worth stating plainly because the failure is silent.
+ *
+ * The policy permits scripts only if they carry a nonce minted for that
+ * response. A statically prerendered page has its HTML — including Next's
+ * inline bootstrap script — generated once at build time, long before any nonce
+ * exists, so those scripts go out unmarked and a conforming browser refuses to
+ * run them. The result is a page that returns 200, looks correct in `curl`, and
+ * renders blank in a browser. Two routes were affected: `/login` and the
+ * not-found page.
+ *
+ * Forcing dynamic rendering costs this application essentially nothing. Every
+ * other route is already dynamic because it reads Postgres per request, and the
+ * login page is a small form with no data to cache. There is no page here whose
+ * content is the same for every visitor, which is the only situation static
+ * generation is for.
+ *
+ * Declared on the root layout so it applies to every route beneath it. A page
+ * added later inherits it and cannot silently reintroduce the problem.
+ */
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "CloudSentinel",
   description:
