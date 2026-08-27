@@ -1,0 +1,261 @@
+# CloudSentinel — the dashboard.
+#
+# What this is: the Next.js server that renders the findings, scans and
+# anomalies pages and answers the API routes under app/api/. It is the only
+# component in the deployment that accepts traffic from outside the cluster.
+#
+# Where it fits in the architecture:
+#
+#   browser --> NodePort 30080 --> Service --> [ Deployment: 2 pods ] --> Postgres
+#
+# Applied by `npm run k8s:up`, after 20-migrate-job.yaml has completed — the
+# pods query tables that the migration creates, so starting them first would
+# produce two replicas failing their readiness probe until the schema appeared.
+---
+# The Service.
+#
+# NodePort, which publishes the dashboard on port 30080 of the cluster node. On
+# both kind and Docker Desktop that node is a container on this machine, so the
+# dashboard appears at http://localhost:30080 with nothing else installed.
+#
+# An Ingress would be the production answer, and it is deliberately not used
+# here: it needs an ingress controller installed into the cluster, which is
+# another moving part to explain, install and keep running for a single service
+# on a laptop. The project's constraint is that it must stay free and
+# reproducible on one machine, and a NodePort meets that with no dependencies.
+# The trade-off — no TLS termination, no host-based routing, a port number
+# instead of a hostname — is real but belongs to a real deployment.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudsentinel-app
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/name: cloudsentinel-app
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: cloudsentinel-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      # Fixed rather than allocated, so the URL in the README stays correct
+      # between deployments. 30080 is inside Kubernetes' default NodePort range
+      # (30000-32767); a lower number would be rejected by the API server.
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudsentinel-app
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/name: cloudsentinel-app
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  # Two replicas, which is the smallest number that proves anything. With one,
+  # a rolling update is an outage and nothing about the design is tested. With
+  # two, a deployment has to actually work: the readiness probe has to be
+  # correct, sessions have to survive being served by either pod, and the
+  # database has to tolerate more than one writer.
+  #
+  # That last point is worth stating because it is a property of earlier design
+  # decisions rather than of this file. Sessions are stateless JWTs verified
+  # against a shared secret, so a request handled by a different pod than the
+  # one that issued the cookie still works — there is no session store to share.
+  # The known exception is the login rate limiter in lib/api/rate-limit.ts,
+  # which is in-process: with two replicas its effective limit is doubled,
+  # because each pod counts attempts on its own. That is documented in that file
+  # and is the reason a real deployment needs a shared store or a limit at the
+  # proxy.
+  replicas: 2
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never drop below the current capacity during an update, and add at most
+      # one extra pod. Combined with the readiness probe, this means a release
+      # that cannot reach the database — a wrong Secret, an unapplied migration
+      # — stalls with the previous version still serving, rather than replacing
+      # a working dashboard with a broken one.
+      maxUnavailable: 0
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudsentinel-app
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudsentinel-app
+        app.kubernetes.io/component: dashboard
+        app.kubernetes.io/part-of: cloudsentinel
+    spec:
+      # Long enough for in-flight requests to finish after the pod stops
+      # receiving new ones. The image runs `node server.js` directly rather than
+      # through npm precisely so that SIGTERM reaches Node instead of being
+      # swallowed by a wrapper process — see the CMD comment in the Dockerfile.
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        # uid 1000 is the `node` account the `app` stage of the Dockerfile
+        # switches to. `runAsNonRoot` is the belt-and-braces half of that: if the
+        # Dockerfile's `USER node` line were ever removed, this makes the
+        # cluster refuse to start the pod rather than quietly running the web
+        # server as root.
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: app
+          image: cloudsentinel:app
+          # Built locally, never pushed to a registry — the project must stay at
+          # zero cost. See the fuller note in 20-migrate-job.yaml for why this
+          # is `Never` rather than `IfNotPresent`.
+          imagePullPolicy: Never
+
+          ports:
+            - name: http
+              containerPort: 3000
+
+          env:
+            # SECURITY: the signing key for every session token, from a Secret.
+            #
+            # This is the most sensitive value in the project: anyone holding it
+            # can forge a token claiming to be any user with any role, because a
+            # JWT is trusted precisely as far as its signature can be. It is
+            # generated by `npm run k8s:up` and exists only in the cluster —
+            # never in this file, never in the image (the Dockerfile's
+            # build-time value is a placeholder scoped to one RUN command), and
+            # never in the repository.
+            - name: CLOUDSENTINEL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: cloudsentinel-app
+                  key: CLOUDSENTINEL_JWT_SECRET
+
+            - name: POSTGRES_HOST
+              value: cloudsentinel-db
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: cloudsentinel
+            - name: POSTGRES_DB
+              value: cloudsentinel
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudsentinel-db
+                  key: POSTGRES_PASSWORD
+            - name: CLOUDSENTINEL_ALLOW_REMOTE_DB
+              value: "1"
+            - name: POSTGRES_CA_CERT_FILE
+              value: /etc/cloudsentinel-tls/ca.crt
+
+            # Marks the session cookie `Secure` and enables production React.
+            # Note the honest consequence: `Secure` means the browser will only
+            # send the cookie over HTTPS, and this NodePort serves plain HTTP,
+            # so logging in at http://localhost:30080 will not work with this
+            # set to `production` unless the browser treats localhost as a
+            # secure context — which Chrome and Firefox both do. On any other
+            # hostname this deployment needs TLS in front of it, which is what
+            # an Ingress would provide.
+            - name: NODE_ENV
+              value: production
+
+          # Liveness: is the process alive? Shallow by design, and it touches no
+          # database. Failing it restarts the container, so it must only fail
+          # for something a restart can fix — the reasoning is written out in
+          # app/api/healthz/route.ts.
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness: can it serve a useful request? This one does query the
+          # database, because every page and API route reads it. Failing this
+          # only removes the pod from the Service, so a database outage parks
+          # the pods instead of restarting them in a loop.
+          readinessProbe:
+            httpGet:
+              path: /api/readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            # Longer than the 3s internal race in app/api/readyz/route.ts, so
+            # the route always answers with a deliberate 503 rather than being
+            # cut off mid-check and reported as a timeout.
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Startup probe: gives a cold Node process time to boot without the
+          # liveness probe killing it first. Up to 30 x 2s = 60 seconds, after
+          # which liveness takes over with its much tighter threshold. Without
+          # this, a slow start on a loaded laptop looks like a hung process and
+          # the pod restarts forever.
+          startupProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+
+          volumeMounts:
+            - name: ca
+              mountPath: /etc/cloudsentinel-tls
+              readOnly: true
+            # Required by `readOnlyRootFilesystem` below. Node writes temporary
+            # files here, and Next keeps a small cache under .next/cache; both
+            # are per-pod scratch space that should not survive a restart, which
+            # is exactly what an emptyDir is.
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/.next/cache
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+            # SECURITY: the container cannot write to its own filesystem.
+            #
+            # This is the single most useful hardening setting on a web server.
+            # A large share of post-exploitation depends on writing something to
+            # disk — a web shell, a modified server file, a downloaded tool. With
+            # the root filesystem read-only, the only writable paths are the two
+            # empty scratch directories above, neither of which is served to
+            # anyone or survives a restart.
+            readOnlyRootFilesystem: true
+
+      volumes:
+        # The public CA certificate only. The app never receives the database's
+        # private key — see the note in 20-migrate-job.yaml on why these are two
+        # separate secrets.
+        - name: ca
+          secret:
+            secretName: cloudsentinel-ca
+        - name: tmp
+          emptyDir: {}
+        - name: next-cache
+          emptyDir: {}

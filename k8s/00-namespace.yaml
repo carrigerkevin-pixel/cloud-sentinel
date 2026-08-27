@@ -1,0 +1,57 @@
+# CloudSentinel — Kubernetes namespace.
+#
+# What this is: the namespace every other manifest in k8s/ is deployed into, and
+# the place where this deployment's security floor is declared.
+#
+# Where it fits in the architecture: it is the outermost container of the
+# Kubernetes deployment. Nothing runs outside it.
+#
+#   [ this namespace ]
+#     +-- 10-postgres.yaml     StatefulSet + Service   (scan history)
+#     +-- 20-migrate-job.yaml  Job                     (schema, runs once)
+#     +-- 30-app.yaml          Deployment + Service    (dashboard)
+#     +-- 40-networkpolicy.yaml                        (who may talk to whom)
+#
+# Applied by `npm run k8s:up`, which must apply this first — every other object
+# names this namespace and will fail to create without it.
+#
+# ---------------------------------------------------------------------------
+# SECURITY: the Pod Security Standards labels are the important part
+# ---------------------------------------------------------------------------
+#
+# `restricted` is the strictest of the three built-in Kubernetes policies. With
+# `enforce`, the API server *rejects* any pod in this namespace that does not
+# meet it — running as root, escalating privileges, keeping Linux capabilities,
+# mounting the host filesystem, using host networking, or omitting a seccomp
+# profile are all refused at admission time.
+#
+# The reason to declare it here rather than to rely on the securityContext
+# blocks in each workload is that this one is not optional. A securityContext is
+# a promise each manifest makes about itself, and a promise can be dropped in an
+# edit, forgotten in a new manifest, or missing from something applied by hand
+# during debugging — and none of those produce any visible complaint. This label
+# makes the cluster enforce the rule from outside, so a workload that stops
+# meeting it fails loudly instead of quietly running with more privilege than it
+# should have.
+#
+# That distinction is the whole subject of this project. CloudSentinel exists to
+# find permissions that were granted and then never noticed; its own deployment
+# should not depend on everyone remembering.
+#
+# `warn` and `audit` are set alongside `enforce` so that a violation is
+# explained in the `kubectl apply` output and recorded in the audit log, rather
+# than only producing a rejection.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudsentinel
+  labels:
+    app.kubernetes.io/name: cloudsentinel
+    app.kubernetes.io/part-of: cloudsentinel
+
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest

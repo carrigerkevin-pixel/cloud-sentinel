@@ -1,0 +1,66 @@
+# CloudSentinel — kind cluster definition.
+#
+# What this is: the configuration for the local Kubernetes cluster the project
+# deploys into, created with:
+#
+#   kind create cluster --config k8s/kind-cluster.yaml
+#
+# `npm run k8s:cluster` runs exactly that. It is separate from `npm run k8s:up`
+# on purpose — creating a cluster takes a minute or two and is done once, while
+# deploying into it happens on every change.
+#
+# Where it fits in the architecture: below everything else in k8s/. This file
+# describes the machine; the numbered manifests describe what runs on it.
+#
+# ===========================================================================
+# Why kind rather than minikube
+# ===========================================================================
+#
+# Both are free and both run locally, which is what the project's zero-cost
+# constraint requires. kind is preferred here for one practical reason: it runs
+# the cluster's nodes as Docker containers, and Docker Desktop is already a
+# dependency of this project. minikube would add a second virtualisation layer
+# to a machine where getting the first one working was itself a piece of work —
+# this laptop's BIOS exposes no VT-x toggle, and virtualisation had to be
+# enabled through Windows features instead.
+#
+# Docker Desktop's own built-in Kubernetes is a third option and is supported by
+# scripts/k8s.ts, which detects the active context. It needs no cluster
+# definition at all, so this file is unused on that path. The trade-off is that
+# Docker Desktop's networking does not enforce NetworkPolicy, so the rules in
+# 40-networkpolicy.yaml are stored and ignored there — see the warning at the
+# top of that file.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: cloudsentinel
+
+nodes:
+  # A single node that is both control plane and worker.
+  #
+  # Multiple workers would demonstrate scheduling across nodes, but every node
+  # is a container on this one laptop, so the additional realism is mostly
+  # cosmetic while the memory cost is not. The properties this project wants to
+  # exercise — rolling updates, readiness gating, a StatefulSet with a
+  # persistent volume — all work on a single node.
+  - role: control-plane
+
+    # Publish the dashboard's NodePort on the host.
+    #
+    # Without this, port 30080 exists only inside the kind node's container and
+    # reaching the dashboard needs `kubectl port-forward`, which is a foreground
+    # process that has to be kept running and re-established after every pod
+    # restart. This mapping makes http://localhost:30080 work directly and keep
+    # working.
+    #
+    # SECURITY: `listenAddress` is set to loopback explicitly. The default is
+    # 0.0.0.0, which would publish the dashboard to every network this machine
+    # is attached to — including whatever wifi it is on — and Docker punches
+    # through the Windows firewall to do it. That is the same loopback
+    # discipline docker-compose.yml applies to the Postgres port and
+    # lib/db/client.ts enforces in code, applied to the one component here that
+    # actually serves a login form.
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 30080
+        listenAddress: "127.0.0.1"
+        protocol: TCP

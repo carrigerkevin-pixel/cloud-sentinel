@@ -31,6 +31,13 @@
     "user:passwd": "node scripts/user.ts passwd",
     "user:revoke": "node scripts/user.ts revoke",
     "user:delete": "node scripts/user.ts delete",
+    "k8s:cluster": "node scripts/k8s.ts cluster",
+    "k8s:build": "node scripts/k8s.ts build",
+    "k8s:up": "node scripts/k8s.ts up",
+    "k8s:user": "node scripts/k8s.ts user",
+    "k8s:status": "node scripts/k8s.ts status",
+    "k8s:logs": "node scripts/k8s.ts logs",
+    "k8s:down": "node scripts/k8s.ts down",
     "relock": "docker run --rm -v .:/app -w /app node:24-slim npm install --package-lock-only"
   },
   "dependencies": {

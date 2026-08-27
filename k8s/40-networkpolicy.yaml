@@ -1,0 +1,184 @@
+# CloudSentinel — network policy.
+#
+# What this is: the rules describing which pods may talk to which, applied to
+# the `cloudsentinel` namespace. Kubernetes' default is that every pod can reach
+# every other pod in the cluster, in both directions, on every port. These
+# manifests replace that with a deny-by-default posture and a short list of the
+# connections the project actually makes.
+#
+# Where it fits in the architecture: it is the internal counterpart of the
+# Service definitions. Those say how a pod is *reached*; these say who is
+# *allowed* to reach it.
+#
+#   internet ──✗── database          (no path at all)
+#   browser  ──✓── app :3000
+#   app      ──✓── database :5432
+#   migrate  ──✓── database :5432
+#   app      ──✗── the internet      (egress denied except DNS and the database)
+#
+# ===========================================================================
+# READ THIS FIRST: enforcement is not guaranteed on a local cluster
+# ===========================================================================
+#
+# NetworkPolicy objects are inert unless the cluster's network plugin
+# implements them. The API server accepts and stores them either way, with no
+# warning, so a policy can look perfectly applied and be doing nothing.
+#
+#   - kind: recent versions of its default CNI (kindnet) do enforce
+#     NetworkPolicy, but older ones silently ignore it.
+#   - Docker Desktop's built-in Kubernetes does not enforce it at all.
+#
+# This is stated plainly rather than glossed over, because a security control
+# believed to be active and in fact absent is worse than a known gap: it is the
+# precise failure mode CloudSentinel exists to find in other people's
+# infrastructure. Whether it is real here can be checked, and `npm run k8s:up`
+# prints a warning when it detects a cluster that will not enforce these.
+#
+# They are still worth applying. On any managed cluster (Calico, Cilium, and
+# every major cloud provider's default) these are enforced, so this file is the
+# deployment's actual intent expressed in the place that would carry it — not a
+# comment describing an intent that lives nowhere.
+---
+# Deny all ingress to every pod in the namespace.
+#
+# An empty `podSelector` matches every pod; an empty `ingress` list permits
+# nothing. NetworkPolicy is additive and has no "deny" rule, so this is how a
+# default-deny is written: start from nothing and let the policies below add
+# back the specific connections that are needed.
+#
+# Applying this alone would break the deployment, which is the point — every
+# allowed path after this has to be named explicitly, so reading this file gives
+# the complete list rather than an incomplete set of exceptions to an invisible
+# default.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress: []
+---
+# Allow the dashboard to be reached on its HTTP port.
+#
+# `from` is deliberately omitted, which allows any source. That is not laziness:
+# the traffic arrives through a NodePort, so from the pod's point of view it
+# comes from the node's address rather than from another pod, and there is no
+# selector that reliably describes "a browser outside the cluster".
+#
+# What this rule still buys is the port restriction. Only 3000 is reachable —
+# anything else the pod might ever listen on, deliberately or otherwise, stays
+# closed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-http
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudsentinel-app
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 3000
+---
+# Allow the database to be reached only by the dashboard and the migration Job.
+#
+# This is the rule that carries the most weight in the file. The database holds
+# every finding, every user's password hash, and every session's token version.
+# Without a policy, any pod anywhere in the cluster — including something
+# unrelated that a future experiment leaves running — can open a connection to
+# it and attempt to authenticate. With it, the database is unreachable from
+# everything except the two workloads that have a reason to speak to it, and a
+# stolen database password is useless from anywhere else.
+#
+# The two `from` entries are separate list items rather than one selector with
+# two labels, because entries in a list are ORed while labels within a single
+# selector are ANDed — combining them would match a pod that is somehow both the
+# dashboard and the migration Job, which is to say nothing at all. That is an
+# easy and silent mistake to make in NetworkPolicy, and the resulting rule
+# denies everything while looking permissive.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-db-from-app
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudsentinel-db
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudsentinel-app
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudsentinel-migrate
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# Restrict what the dashboard may connect *out* to.
+#
+# Egress policy is the half that usually gets skipped, and it is the half that
+# limits the damage after something has already gone wrong. A web application
+# that is compromised is valuable to an attacker mostly for what it can reach
+# next: a database to dump, an internal service to pivot to, and an address on
+# the internet to send the results to.
+#
+# This policy leaves the dashboard exactly two destinations — DNS, and the
+# database — so there is no path off the machine at all. Findings cannot be
+# posted to a remote collector, a second-stage payload cannot be downloaded, and
+# a reverse shell has nowhere to call home to.
+#
+# It is also an honest fit for what the dashboard actually does. Unlike the
+# collectors, it never calls AWS and makes no outbound request of any kind;
+# denying egress costs this workload nothing. (The `app` image does not even
+# contain the AWS SDK — see the Dockerfile.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-app-egress
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudsentinel-app
+  policyTypes: ["Egress"]
+  egress:
+    # DNS. This has to be first and has to be right: without it the pod cannot
+    # resolve `cloudsentinel-db` and the rule below never gets a chance to
+    # apply, which presents as a database connection failure rather than as a
+    # name resolution failure and is a genuinely confusing way to lose an
+    # afternoon. Both protocols are listed because DNS falls back to TCP for
+    # responses too large for a UDP packet.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The database, and only on its own port.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudsentinel-db
+      ports:
+        - protocol: TCP
+          port: 5432

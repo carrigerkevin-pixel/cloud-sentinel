@@ -1,0 +1,190 @@
+# CloudSentinel — database schema migration.
+#
+# What this is: a Job that applies db/migrations/*.sql to the in-cluster
+# database and exits. It runs once per deployment, before the dashboard starts.
+#
+# Where it fits in the architecture: it is the step between the database
+# existing and the application being able to use it.
+#
+#   10-postgres.yaml ready --> [ this Job ] --> 30-app.yaml starts
+#
+# Run by `npm run k8s:up`, which waits for it to complete before applying the
+# dashboard. A Job's `spec` is immutable, so that script deletes any previous
+# copy before applying this one — re-applying it unchanged would otherwise fail
+# with a "field is immutable" error rather than running again.
+#
+# ===========================================================================
+# Why migrations run as a Job and not from the application
+# ===========================================================================
+#
+# The tempting alternative is to have the dashboard migrate on startup. It is
+# rejected for two reasons.
+#
+# The first is correctness under more than one replica. 30-app.yaml runs two
+# pods, and both would start at once, both would try to migrate, and the schema
+# would be raced. lib/db/migrate.ts does take a Postgres advisory lock precisely
+# to survive that, but relying on a lock to make an unnecessary race safe is a
+# worse design than not racing.
+#
+# The second is capability, and it is the one that matters more. Migrating the
+# schema means `ALTER TABLE` and `DROP` — the ability to destroy every stored
+# finding. A long-running, internet-facing web process should not hold that
+# ability for its entire lifetime just because it needed it for two seconds at
+# boot. Here it belongs to a container that exists for the length of one
+# deployment and then no longer exists at all. This is the same reason the
+# Dockerfile builds `tools` as a separate image from `app`: the dashboard image
+# does not even contain scripts/db.ts.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cloudsentinel-migrate
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/name: cloudsentinel-migrate
+    app.kubernetes.io/component: migration
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  # Six attempts before the Job is declared failed. Migrations are idempotent —
+  # lib/db/migrate.ts records which have been applied and skips them — so a
+  # retry after a transient connection failure re-runs nothing that succeeded.
+  backoffLimit: 6
+  # Keep the finished Job (and its logs) for an hour, then let Kubernetes clean
+  # it up. Without this, completed Jobs accumulate in the namespace forever; with
+  # a shorter value, the logs vanish before anyone investigating a failed
+  # deployment gets to read them.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudsentinel-migrate
+        app.kubernetes.io/part-of: cloudsentinel
+    spec:
+      # `Never`, not `OnFailure`. A failed pod is preserved for inspection and
+      # the Job creates a fresh one, so the logs from the attempt that failed
+      # are still readable — which is exactly what is wanted when a migration
+      # did not apply.
+      restartPolicy: Never
+      securityContext:
+        # uid 1000 is the `node` account in the official Node images, which the
+        # `tools` stage of the Dockerfile switches to with `USER node`.
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      initContainers:
+        # Wait for Postgres to be genuinely ready before the migration starts.
+        #
+        # The Job could simply fail and be retried by `backoffLimit`, but each
+        # retry has an exponential backoff, so a database that takes twenty
+        # seconds to initialise can push the whole deployment out by minutes.
+        # Polling here costs a few seconds instead.
+        #
+        # `pg_isready` rather than a TCP probe, for the same reason as the
+        # readiness probe in 10-postgres.yaml: Postgres accepts connections
+        # before it can answer queries.
+        - name: wait-for-db
+          image: postgres:17-alpine
+          command:
+            - sh
+            - -c
+            - |
+              echo "waiting for cloudsentinel-db to accept queries..."
+              until pg_isready -h cloudsentinel-db -p 5432 -U cloudsentinel -d cloudsentinel; do
+                sleep 2
+              done
+              echo "database is ready"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+
+      containers:
+        - name: migrate
+          image: cloudsentinel:tools
+          # `Never`, because this image is built locally and never pushed to a
+          # registry — the project is required to stay at zero cost, and a
+          # private registry is not free. `IfNotPresent` would be almost right
+          # but would silently try to pull from Docker Hub if the image were
+          # ever missing, producing a confusing ImagePullBackOff against a
+          # repository that does not exist. `Never` fails with "image not
+          # present", which says what is actually wrong.
+          #
+          # On kind, `npm run k8s:build` runs `kind load docker-image` to copy
+          # the image into the cluster's own containerd. Docker Desktop's
+          # Kubernetes shares the local image store directly and needs no such
+          # step. scripts/k8s.ts detects which is in use.
+          imagePullPolicy: Never
+          command: ["node", "scripts/db.ts", "migrate"]
+
+          env:
+            - name: POSTGRES_HOST
+              value: cloudsentinel-db
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: cloudsentinel
+            - name: POSTGRES_DB
+              value: cloudsentinel
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudsentinel-db
+                  key: POSTGRES_PASSWORD
+            # The database is reached by Service name, which is not loopback, so
+            # lib/db/client.ts requires this to be set explicitly. That refusal
+            # exists to stop a stray DATABASE_URL from writing scan data into
+            # somewhere shared; here the remote host is the intended one, and
+            # saying so in the manifest is the acknowledgement the check asks
+            # for.
+            - name: CLOUDSENTINEL_ALLOW_REMOTE_DB
+              value: "1"
+            # Because the connection is remote it must also be TLS-verified.
+            # This points at the authority that signed the database's
+            # certificate, so verification succeeds honestly rather than being
+            # switched off. See resolveSslOptions() in lib/db/client.ts.
+            - name: POSTGRES_CA_CERT_FILE
+              value: /etc/cloudsentinel-tls/ca.crt
+
+          volumeMounts:
+            - name: ca
+              mountPath: /etc/cloudsentinel-tls
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+
+      volumes:
+        # SECURITY: this is `cloudsentinel-ca`, not `cloudsentinel-db-tls`.
+        #
+        # The two secrets exist separately for exactly this reason. The database
+        # needs the server certificate *and its private key*; a client needs
+        # only the public authority certificate that signed it. Mounting the
+        # combined secret here would hand the migration container the key that
+        # lets anything impersonate the database — a capability it has no use
+        # for. A certificate authority file is public by nature; the key is not.
+        - name: ca
+          secret:
+            secretName: cloudsentinel-ca
