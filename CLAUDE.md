@@ -417,6 +417,135 @@ number cannot be quoted without it.
    "100.00"` is true in string comparison, which would sort the dashboard
    wrongly), and that a failed insert rolls the entire run back.
 
+### Phase 7 complete — containers and Kubernetes
+The project now deploys as containers into a local Kubernetes cluster. Nothing
+about the application changed to make that possible except one thing, described
+below, and that one thing was a deliberate refusal to weaken an existing rule.
+
+**Images (`Dockerfile`)**
+✅ Multi-stage, producing **two runtime images** from one source tree, plus a
+   throwaway `certgen` stage.
+   - `cloudsentinel:app` — the standalone Next.js server. 317MB.
+   - `cloudsentinel:tools` — `scripts/`, `lib/`, `db/migrations/`. 564MB.
+   - The split is least privilege, not tidiness: the dashboard image **cannot**
+     migrate the database, create an admin user, or call AWS, because `scripts/`
+     and the AWS SDK are not in it. A compromised web process has no
+     `node scripts/user.ts create --admin` available to it.
+✅ `output: "standalone"` in `next.config.ts` — Next traces what the server
+   actually imports, taking the application payload from a 500MB `node_modules`
+   tree to 31MB. Static assets are **not** traced (nothing imports them) and are
+   copied explicitly; miss that and the site renders completely unstyled.
+✅ The `tools` stage deletes Next, React, `sharp` and the SWC binaries after
+   `npm ci --omit=dev` — 384MB of web framework that no CLI imports, and which
+   would otherwise hand an intruder a compiler in a migration container. They
+   survive `--omit=dev` because they are production dependencies *of the
+   dashboard*, which npm has no way to know this image never serves. A
+   build-time check imports the whole CLI module graph so a future import that
+   reaches React fails the build rather than a deployment.
+✅ The build-time `CLOUDSENTINEL_JWT_SECRET` is a placeholder scoped to a single
+   `RUN` command rather than an `ENV`. It reaches no layer, no image metadata,
+   and no runtime image — and it avoids Docker's own linter correctly reporting
+   a secret in the environment.
+
+**The one application change, and why it went the way it did**
+`lib/db/client.ts` has always required certificate-verified TLS for any
+non-loopback database. In a cluster the database is `cloudsentinel-db`, so that
+rule applies to **every** connection — and the first deployment failed with
+`The server does not support SSL connections`, exactly as designed.
+
+The tempting fix is a switch that skips verification for "internal" hosts. That
+was rejected. It yields a connection that is encrypted but *unauthenticated*, so
+anything able to answer on the Service address can terminate and read it — and
+the traffic is scan findings, which are a ranked list of where an environment is
+weakest. A tool that reports other people's weak configurations must not ship
+the habit it criticises.
+
+So the rule is **satisfied** instead:
+✅ `resolveSslOptions()` + `POSTGRES_CA_CERT_FILE` — supply the authority that
+   signed the certificate and keep `rejectUnauthorized: true`. There is
+   deliberately no setting anywhere in the project that disables verification.
+   A missing CA file is a hard failure, because falling back to the system trust
+   store would silently widen what is accepted from one private CA to every
+   authority on the internet, and nothing would look wrong.
+✅ `scripts/k8s.ts` issues a private CA and a server certificate whose Subject
+   Alternative Names cover all four spellings of the Service hostname.
+✅ Six tests in `lib/db/client.test.ts`, weighted toward "can verification be
+   turned off by any route" rather than the happy path — the dangerous failure
+   is silent.
+
+**Manifests (`k8s/`)**
+✅ `00-namespace.yaml` — enforces the **restricted Pod Security Standard** at the
+   namespace. The API server rejects any pod running as root, escalating
+   privileges, keeping capabilities, or missing a seccomp profile. Declared here
+   rather than trusted to each manifest because a `securityContext` is a promise
+   a manifest makes about itself, and a dropped promise produces no complaint.
+✅ `10-postgres.yaml` — StatefulSet, TLS on, `readOnlyRootFilesystem`, uid 70
+   (the Alpine `postgres` account — the Debian image uses 999). The
+   `volumeClaimTemplate` survives deletion of the StatefulSet, so removing the
+   workload does not destroy `first_seen_at`, the one value in the project that
+   cannot be regenerated.
+✅ `20-migrate-job.yaml` — migrations as a Job, not on application startup. Two
+   reasons: two replicas would race the schema, and more importantly
+   `ALTER TABLE`/`DROP` is the ability to destroy every stored finding, which a
+   long-running web process should not hold for its whole lifetime because it
+   needed it for two seconds at boot.
+✅ `30-app.yaml` — Deployment of 2 replicas, `maxUnavailable: 0`, NodePort 30080.
+   Two replicas is the smallest number that proves anything: with one, a rolling
+   update is an outage and the readiness gate is never tested.
+✅ `40-networkpolicy.yaml` — default-deny ingress, plus the connections actually
+   needed. Database access is gated on a **capability label**
+   (`cloudsentinel.dev/db-client`) rather than a list of workload names. Both
+   were tried; the list was wrong, and it failed exactly as predicted — the
+   account-creation pod was not on it and hung on a connection timeout with
+   nothing pointing back at the policy. Egress from the dashboard is restricted
+   to DNS and the database, so a compromised web process has no route off the
+   machine at all.
+✅ `kind-cluster.yaml` — single node, NodePort 30080 published on **127.0.0.1
+   only**. The default `0.0.0.0` would publish the login form to every network
+   this laptop is attached to; that is the same loopback discipline
+   docker-compose.yml and lib/db/client.ts already apply.
+
+**Probes**
+✅ `app/api/healthz` (liveness) and `app/api/readyz` (readiness) — split
+   deliberately. Failing liveness *restarts* the container, so it must only fail
+   for something a restart fixes; if it queried Postgres, a database outage would
+   restart every replica in a loop and hit the recovering database with a
+   thundering herd. Readiness owns the database check, and failing it merely
+   parks the pod. Both are unauthenticated and therefore disclose nothing: the
+   readiness failure body is the fixed string `{"status":"unready"}`, with the
+   driver error — which names the host, user and precise authentication failure
+   — logged server-side only.
+
+**`scripts/k8s.ts`**
+✅ `npm run k8s:cluster | build | up | user | status | logs | down`. It exists
+   because `kubectl apply -f k8s/` cannot order the stages, cannot generate
+   secrets, and fails on re-run because a Job's spec is immutable.
+✅ Secrets are piped to `kubectl` over **stdin**, never `--from-literal`: a
+   command line is world-readable in the process list and lands in shell
+   history. Same reasoning as `npm run user:create` prompting for a password.
+✅ Four separate secrets, so the database gets the server key while the clients
+   get only the public CA — anything holding that key could impersonate the
+   database.
+✅ `k8s:down` keeps the volume and the secrets; only `--purge` deletes data.
+
+**Verified end to end against a real kind cluster (Kubernetes 1.37)**
+- All three migrations applied; both dashboard replicas connected over
+  **TLSv1.3 / AES-256-GCM**, which — with `rejectUnauthorized: true` and the
+  private CA — means certificate and hostname verification genuinely succeeded.
+- Dashboard reachable at `http://localhost:30080`; `/api/findings` returns 401
+  unauthenticated, `/` redirects to `/login`, and the CSS loads (proving the
+  manual `.next/static` copy in the Dockerfile is right).
+- **NetworkPolicy is genuinely enforced on kind**: a probe pod without the
+  `db-client` label times out reaching the database, while the dashboard remains
+  reachable. The dashboard cannot open a connection to `1.1.1.1:443` but can
+  reach the database.
+✅ CI (`containers` job) — builds both images on Linux, smoke-tests them against
+   a real Postgres, then creates a kind cluster, runs `npm run k8s:up`, and
+   **asserts the controls are live**: `k8s/test/netpol-probe.yaml` must report
+   BLOCKED and `pg_stat_ssl` must report encrypted client connections. A
+   NetworkPolicy that is stored but inert looks identical to one that works.
+✅ `npm test` — **375 tests** (up from 369), still no database, Docker or Python.
+
 ### Getting the dashboard running
 ```
 docker compose up -d db
@@ -435,6 +564,19 @@ npm run ml:save       # store the run so /anomalies can show it
 Needs Python 3.11+ on PATH. Nothing here touches AWS, LocalStack or the network.
 `CLOUDSENTINEL_JWT_SECRET` must be set in `.env` — see `.env.example`. There is
 no default, and `lib/auth/jwt.ts` refuses to start without one.
+
+### Getting it running on Kubernetes
+```
+npm run k8s:cluster                          # create the kind cluster (once)
+npm run k8s:build                            # build both images, load them in
+npm run k8s:up                               # deploy in dependency order
+npm run k8s:user -- you@example.com --admin  # prompts for a password
+                                             # then http://localhost:30080
+```
+`npm run k8s:status` / `k8s:logs` to inspect it. `npm run k8s:down` removes the
+workloads but keeps the database volume and the secrets; only
+`npm run k8s:down -- --purge` deletes the data. Nothing here needs LocalStack —
+the dashboard reads the database, not AWS.
 
 ## Environment notes specific to this machine
 - OS: Windows, PowerShell as primary shell
@@ -456,6 +598,15 @@ no default, and `lib/auth/jwt.ts` refuses to start without one.
   anyway — a stray `σ` crashed a run *after* all the work was done.
 - PowerShell execution policy set to `RemoteSigned` for `CurrentUser` scope
   (needed for `npx` to run)
+- `kind` was installed with `winget install Kubernetes.kind` (v0.33.0). winget
+  adds it to the user PATH, so **a shell started before the install will not see
+  it** — open a new terminal, or call it at
+  `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Kubernetes.kind_*\kind.exe`.
+  `kubectl` was already present: Docker Desktop ships it.
+- Docker Desktop's built-in Kubernetes is the alternative to kind and
+  `scripts/k8s.ts` supports it, but it does **not** enforce NetworkPolicy, so
+  `k8s/40-networkpolicy.yaml` is stored and inert there. `npm run k8s:up` prints
+  a warning when it detects that cluster. kind enforces it — verified.
 - AWS CLI dummy credentials configured (`test`/`test`/`us-east-1`) — LocalStack
   doesn't validate real credentials, just needs something present
 - LocalStack runs with **persistence disabled**, so all seeded fixtures are lost
@@ -473,10 +624,34 @@ no default, and `lib/auth/jwt.ts` refuses to start without one.
   `node:24-slim` container via Docker) and commit that version. Do not run a
   plain `npm install` afterwards, or it will strip the entries again.
 ## Not started yet (next steps)
-1. Containerize everything, deploy via local Kubernetes (`kind`/`minikube`)
-2. Security hardening pass, README, demo video
+1. Security hardening pass, README polish, demo video
 
 Known follow-ups, none blocking:
+- **The NodePort serves plain HTTP.** `NODE_ENV=production` marks the session
+  cookie `Secure`, which browsers only send over HTTPS — this works at
+  `localhost` because Chrome and Firefox treat it as a secure context, but on
+  any other hostname the deployment needs TLS in front of it. That is an Ingress
+  with a certificate, which needs an ingress controller installed in the
+  cluster.
+- **No RBAC is configured.** The `cloudsentinel.dev/db-client` label that gates
+  database access is a *declaration*, not an authorisation: anyone able to create
+  a pod in the namespace can attach it. That is inherent to NetworkPolicy
+  selecting on labels, and restricting who may create pods is RBAC's job.
+- **Images are built locally and never pushed.** `imagePullPolicy: Never` keeps
+  the project free, but it means the cluster cannot pull them on a fresh node
+  and `npm run k8s:build` has to be re-run after any code change. A registry is
+  the real answer and is not free.
+- **One Postgres replica, no replication and no backups.** The volume survives
+  `k8s:down`, but nothing copies it anywhere. Losing the volume loses every
+  `first_seen_at`.
+- **The ML layer is not containerised.** `npm run ml:pipeline` still runs on the
+  host, because a scikit-learn image is large and the pipeline is a batch job
+  rather than a service. A CronJob running it in-cluster would be the natural
+  next step, and `ml:save` already works from the `tools` image.
+- **`npm run scan` is not run in the cluster either.** It needs LocalStack, which
+  is deliberately not deployed here for the same reason it is absent from
+  docker-compose.yml — it requires a personal auth token since the March 2026
+  licensing change.
 - **Anomaly triage is modelled nowhere yet.** Phase 5 gave findings a human
   overlay (`finding_triage`); anomalies have no equivalent, so there is no way
   to record "we looked, it was the quarterly export". The table shape would

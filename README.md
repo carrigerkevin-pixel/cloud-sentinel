@@ -41,9 +41,9 @@ address, a sequence that principal has never performed.
 | 4 — Postgres persistence | ✅ complete |
 | 5 — Next.js dashboard + API | ✅ complete |
 | 6 — ML anomaly layer | ✅ complete |
-| 7 — Docker + Kubernetes | planned |
+| 7 — Docker + Kubernetes | ✅ complete |
 
-**369 tests** on Node's built-in test runner — no test framework dependency, and no
+**375 tests** on Node's built-in test runner — no test framework dependency, and no
 Docker, LocalStack, Python, or AWS credentials needed. A further **76 integration
 tests** (`npm run test:db`) run against a real Postgres.
 
@@ -70,6 +70,10 @@ cp .env.example .env      # then set POSTGRES_PASSWORD — see that file
 docker compose up -d db
 npm run db:migrate
 npm run scan -- --save
+
+# Deploy the whole thing to a local Kubernetes cluster (needs kind)
+npm run k8s:cluster && npm run k8s:build && npm run k8s:up
+npm run k8s:user -- you@example.com --admin   # then http://localhost:30080
 
 # Behavioural anomaly detection (needs Python 3.11+; touches no network at all)
 npm run ml:setup      # one-off: creates ml/.venv, installs numpy + scikit-learn
@@ -358,6 +362,127 @@ instead of destroying the scan — and the gap is still reported.
 
 ---
 
+## Running on Kubernetes
+
+The whole project — dashboard, database, migrations — deploys into a local
+cluster. It stays free: the images are built locally and never pushed to a
+registry, and `kind` runs the cluster's node as a Docker container.
+
+```bash
+npm run k8s:cluster                        # create the kind cluster (once)
+npm run k8s:build                          # build both images, load them in
+npm run k8s:up                             # deploy, in dependency order
+npm run k8s:user -- you@example.com --admin # create an account (prompts)
+# http://localhost:30080
+```
+
+`npm run k8s:status` shows what is running, `npm run k8s:logs` follows the
+dashboard, and `npm run k8s:down` removes the workloads while keeping the
+database volume. Only `npm run k8s:down -- --purge` deletes the data.
+
+Docker Desktop's built-in Kubernetes works too — the deploy script detects which
+cluster it is talking to — with one caveat noted below.
+
+### Two images, not one
+
+The `Dockerfile` builds two runtime images from one source tree.
+
+| | contains | runs |
+| --- | --- | --- |
+| `cloudsentinel:app` | the standalone Next.js server | long-lived HTTP |
+| `cloudsentinel:tools` | `scripts/`, `lib/`, `db/migrations/` | one command, then exits |
+
+It would be simpler to ship one image and choose a command at runtime. That is
+rejected for the same reason the rule engine flags over-broad IAM policies: a
+workload should not hold a capability it does not use.
+
+The dashboard image *cannot* migrate the database, create an admin user, or call
+AWS — not because it is configured not to, but because `scripts/` and the AWS
+SDK are not in it. If the web process is ever compromised,
+`node scripts/user.ts create --admin` is not an available move. Those abilities
+belong to a Job that exists for the length of one deployment.
+
+`output: "standalone"` in `next.config.ts` is what makes that cheap: Next traces
+which files the server actually imports, so the application payload drops from a
+500MB dependency tree to 31MB. The `tools` image then deletes Next, React and
+the image codecs after install — 384MB of web framework that no CLI imports —
+and a build-time check proves the CLI module graph still loads afterwards.
+
+### The database problem worth reading about
+
+`lib/db/client.ts` has always refused to connect to a non-loopback database
+without certificate-verified TLS. In Kubernetes the database is reached at
+`cloudsentinel-db`, so that rule applies to *every* connection. The obvious
+escape is a switch that skips verification for "internal" hosts.
+
+That was rejected. Skipping verification leaves a connection that is encrypted
+but unauthenticated, so anything able to answer on the Service address can
+terminate it and read the traffic — and the traffic is scan findings, a ranked
+list of exactly where the environment is weakest.
+
+So the rule is *satisfied* instead. `npm run k8s:up` generates a private
+certificate authority and a server certificate whose Subject Alternative Names
+cover all four spellings of the Service hostname, gives the key to Postgres, and
+gives the clients the CA alone. `POSTGRES_CA_CERT_FILE` then lets
+`rejectUnauthorized: true` succeed honestly. There is deliberately no setting
+anywhere in the project that turns verification off.
+
+The split matters: the database gets the certificate **and its private key**;
+the dashboard and the migration Job get the public authority certificate only.
+Anything holding that key could impersonate the database.
+
+### What the deployment actually enforces
+
+- **Restricted Pod Security Standard**, enforced at the namespace. The API
+  server rejects any pod that runs as root, escalates privileges, keeps Linux
+  capabilities, or omits a seccomp profile. This is declared on the namespace
+  rather than trusted to each manifest, because a `securityContext` is a promise
+  a manifest makes about itself — and a promise can be dropped in an edit with
+  nothing to complain about it.
+- **Read-only root filesystems** on every container, with named scratch volumes
+  for the few paths that must be writable.
+- **Deny-by-default networking.** The database is reachable only by pods that
+  carry the `cloudsentinel.dev/db-client` label; the dashboard's *egress* is
+  restricted to DNS and the database, so a compromised web process has no route
+  off the machine at all — no exfiltration, no second-stage download, nowhere
+  for a reverse shell to call.
+- **Migrations as a Job.** `ALTER TABLE` and `DROP` are the ability to destroy
+  every stored finding, and a long-running web process should not hold it for
+  its whole lifetime because it needed it for two seconds at boot.
+- **Secrets generated at deploy time**, never committed and never baked into an
+  image. They are piped to `kubectl` over stdin rather than passed as
+  `--from-literal`, because a command line is visible in the process list and
+  lands in shell history.
+
+None of that is taken on trust. CI creates a real cluster on every push, deploys
+it, and then asserts the controls are live: a probe pod without the `db-client`
+label must fail to reach the database, and `pg_stat_ssl` must report encrypted
+client connections. A NetworkPolicy that is stored but not enforced looks
+identical to one that works, which is exactly the class of mistake this project
+exists to find in other people's infrastructure.
+
+### Known limits
+
+- **Docker Desktop's Kubernetes does not enforce NetworkPolicy**, so those rules
+  are stored and inert there. `npm run k8s:up` prints a warning when it detects
+  that cluster. kind enforces them, and so does every managed cluster.
+- **The NodePort serves plain HTTP.** A production deployment wants an Ingress
+  with TLS termination; that needs an ingress controller, which is another
+  component to install and keep running for a single service on a laptop.
+- **The `db-client` label is a declaration, not an authorisation.** Anyone able
+  to create a pod in the namespace can attach it. That is inherent to
+  NetworkPolicy selecting on labels — naming workloads instead is no better,
+  since the same person could name a pod `cloudsentinel-app`. Restricting who
+  may create pods is RBAC's job, and RBAC is not configured here.
+- **One database replica, no replication.** Postgres replication is a real
+  subject this project does not implement, and two replicas of the manifest
+  would be two databases racing for one volume, not high availability.
+- **The login rate limiter is in-process**, so with two dashboard replicas the
+  effective limit is doubled. Documented in `lib/api/rate-limit.ts`; a real
+  deployment wants a shared store or a limit at the proxy.
+
+---
+
 ## Layout
 
 ```
@@ -416,6 +541,16 @@ scripts/
   gen-logs.ts             npm run logs:gen
   ml.ts                   npm run ml:setup / features / detect / evaluate
   anomalies.ts            npm run ml:save / ml:runs
+  k8s.ts                  npm run k8s:cluster / build / up / user / down
+Dockerfile                multi-stage: `app` (dashboard) and `tools` (CLIs)
+k8s/
+  00-namespace.yaml       namespace + restricted Pod Security Standard
+  10-postgres.yaml        StatefulSet, TLS-enabled, persistent volume
+  20-migrate-job.yaml     schema migration as a Job, not on app startup
+  30-app.yaml             Deployment (2 replicas) + NodePort Service
+  40-networkpolicy.yaml   default-deny, plus the connections that are needed
+  kind-cluster.yaml       the local cluster definition
+  test/netpol-probe.yaml  proves the network policy is enforced, not just stored
 docker-compose.yml        local Postgres
 fixtures/inventory.json   committed snapshot, so everything above is testable offline
 fixtures/cloudtrail.json  NOT committed — deterministic, rebuilt by npm run logs:gen
