@@ -12,6 +12,7 @@
     "seed:down": "node scripts/seed-localstack.ts --teardown",
     "seed:list": "node scripts/seed-localstack.ts --list",
     "collect": "node scripts/collect.ts",
+    "logs:gen": "node scripts/gen-logs.ts",
     "scan": "node scripts/scan.ts",
     "scan:fixture": "node scripts/scan.ts --input fixtures/inventory.json",
     "test": "node --test \"lib/**/*.test.ts\" \"fixtures/**/*.test.ts\"",

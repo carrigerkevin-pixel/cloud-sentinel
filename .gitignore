@@ -42,3 +42,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Synthetic activity logs for the ML anomaly layer.
+#
+# Unlike fixtures/inventory.json these are NOT committed. Generation is pure,
+# deterministic computation — `npm run logs:gen` rebuilds them byte for byte in
+# about 200ms — so committing tens of megabytes of JSON that any checkout can
+# reproduce would bloat every clone for nothing. CI regenerates them.
+/fixtures/cloudtrail.json
+/fixtures/cloudtrail-labels.json
