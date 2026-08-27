@@ -750,9 +750,88 @@ the dashboard reads the database, not AWS.
   `node:24-slim` container via Docker) and commit that version. Do not run a
   plain `npm install` afterwards, or it will strip the entries again.
 ## Not started yet (next steps)
-All eight phases are complete. The one outstanding deliverable is the **demo
-video itself**, which has to be recorded by hand — `docs/demo.md` is the script,
-shot list, and pre-recording checklist for it.
+
+All eight phases are code-complete, committed, and pushed, and CI is green on
+`main`. What remains is a short list of things that **cannot be done by an
+agent** — they need a real terminal, a real browser, a microphone, or the GitHub
+web UI. They are listed here in the order it makes sense to do them.
+
+### Manual steps outstanding
+
+**1. Open a fresh terminal before anything else.**
+`kind` was installed during phase 7 with `winget install Kubernetes.kind`
+(v0.33.0). winget adds it to the user PATH, but a shell started *before* the
+install will not see it. If `kind version` fails, that is why — open a new
+terminal rather than debugging it. `kubectl` is unaffected; Docker Desktop
+ships it.
+
+**2. Create a dashboard account, and log in to a browser.**
+```
+npm run k8s:user -- you@example.com --admin      # in the cluster
+npm run user:create -- you@example.com --admin   # or against local Postgres
+```
+This **must be run in a real interactive terminal**. `scripts/user.ts` prompts
+for the password with echo suppressed, which requires a TTY, so it cannot be
+piped or scripted — that is deliberate (an argument would land in shell history
+and the process list), not a limitation to work around.
+
+**3. Verify the authenticated pages render under the new CSP.** ← *the real gap*
+This is the one genuinely unverified thing in the project, and it is worth doing
+before recording anything.
+
+Phase 8 added a nonce-based Content Security Policy. What *was* verified: every
+script tag on the login page carries the nonce, the nonce rotates per response,
+the header matches the HTML, and all the security headers survive the Kubernetes
+NodePort. What was **not** verified is any page behind the login, because
+creating an account needs the TTY in step 2.
+
+So open http://localhost:30080 (or :3000), sign in, and walk every page —
+overview, findings list, a finding detail, anomalies, scans — with the browser
+devtools **console open**, watching for `Content Security Policy` violation
+messages. Pay particular attention to the two client components,
+`app/components/TriageControl.tsx` and `LogoutButton.tsx`, since interactive
+components are where a CSP problem would surface. Actually click *suppress* on a
+finding and confirm the triage flow completes.
+
+A CSP failure here is silent in the terminal and obvious in the console, which
+is exactly why it needs a human with a browser. If something is blocked, the
+policy is in `proxy.ts` and each directive is annotated with why it is there.
+
+**4. Enable private vulnerability reporting on the repository.**
+`SECURITY.md` links to
+`https://github.com/carrigerkevin-pixel/cloud-sentinel/security/advisories/new`,
+which only works once the feature is switched on:
+**Settings → Advanced Security → Private vulnerability reporting → Enable**.
+Until then the link 404s, which looks worse than having no policy at all.
+
+**5. Record the demo video.**
+`docs/demo.md` is the full script — six minutes, with a three-minute cut-down
+at the end, structured around four decisions rather than a feature tour.
+
+Read its "Before recording" section first: it lists the setup commands and a
+checklist. The two items worth repeating here:
+- **Do not show `.env`, `k8s/tls/`, or `kubectl get secret -o yaml` on camera.**
+  Those hold the real signing key and database password for this machine. A demo
+  of a security tool leaking its own credentials is what a reviewer remembers.
+- LocalStack runs with persistence disabled, so **re-run `npm run seed`** after
+  starting its container or the scanner section will find nothing.
+
+### State of the machine as of this handoff
+
+- The **kind cluster is still running** (`cloudsentinel`), with the hardened
+  phase 8 images loaded and deployed: two dashboard replicas, Postgres, and the
+  completed migration Job. `npm run k8s:status` to check.
+- `npm run k8s:down` removes the workloads but keeps the database volume, the
+  secrets, and the generated TLS material, so `npm run k8s:up` brings it all
+  back unchanged. Only `npm run k8s:down -- --purge` deletes the data.
+- The Compose Postgres (`cloudsentinel-db`) is also up, separate from the
+  cluster's own database.
+- `k8s/tls/` holds a generated CA and server certificate. It is gitignored.
+  Deleting the directory forces new ones on the next `k8s:up`, but the existing
+  Secrets are not regenerated automatically — if the TLS material is ever
+  replaced, delete the `cloudsentinel-db-tls` and `cloudsentinel-ca` Secrets too
+  or the database will present a certificate the clients no longer trust.
+- Nothing is uncommitted. `main` is pushed and CI is green.
 
 Known follow-ups, none blocking:
 - **`style-src` still allows `'unsafe-inline'`.** Next emits unnonced inline

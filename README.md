@@ -51,6 +51,12 @@ tests** (`npm run test:db`) run against a real Postgres.
 A guided tour of what the project does and why it does it that way is in
 **[docs/demo.md](docs/demo.md)**.
 
+All eight phases are code-complete and CI is green. The remaining work is the
+demo recording itself, plus a browser pass over the authenticated pages to
+confirm the new Content Security Policy does not block anything — the login page
+is verified, the pages behind it are not. Both are tracked at the end of
+`CLAUDE.md`.
+
 ---
 
 ## Quick start
