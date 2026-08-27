@@ -241,3 +241,191 @@ jobs:
       # deployment this is where `--fail-on high` would go.
       - name: Scan the committed fixture
         run: npm run scan -- --input fixtures/inventory.json --severity critical
+
+  # ==========================================================================
+  # Phase 7: containers and Kubernetes
+  # ==========================================================================
+  #
+  # Builds both images and deploys the whole project into a throwaway Kubernetes
+  # cluster, then checks that the security controls it claims are actually in
+  # force.
+  #
+  # This is a separate job rather than more steps on `verify`, for two reasons.
+  # It is slow — a container build plus a cluster creation — and running it in
+  # parallel keeps the fast feedback of the type-check and test suite
+  # unaffected. And it needs nothing `verify` produces, so making it wait would
+  # only add latency.
+  #
+  # Why deploy for real rather than lint the YAML: almost everything worth
+  # getting wrong here is invisible to a schema check. A readiness probe
+  # pointing at the wrong path, a Secret key that does not match the name the
+  # container reads, a certificate whose Subject Alternative Name omits the
+  # Service hostname, a NetworkPolicy selecting a label no pod carries — all are
+  # valid YAML, and all break the deployment. Two of them did break it while
+  # phase 7 was being built.
+  #
+  # SECURITY: like the job above, this needs no secrets. The database password,
+  # the session signing key and the TLS material are generated inside the
+  # cluster by `npm run k8s:up` and are destroyed with the runner.
+  containers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Proves both images build on Linux, which is not redundant with a local
+      # build: development happens on Windows, and the Dockerfile's `npm ci` is
+      # exactly where a lockfile generated on Windows fails — the @emnapi
+      # entries that @tailwindcss/oxide-wasm32-wasi needs get silently dropped,
+      # and nothing notices until an install runs on Linux.
+      - name: Build the container images
+        run: |
+          docker build --target app   -t cloudsentinel:app   .
+          docker build --target tools -t cloudsentinel:tools .
+
+      # A fast check that the images work at all, before spending time on a
+      # cluster.
+      #
+      # `--network host` puts the containers on the runner's own network
+      # namespace, so Postgres is reachable at 127.0.0.1 — which is loopback, so
+      # lib/db/client.ts connects without TLS. That is the intended behaviour
+      # being exercised rather than a workaround: the TLS requirement applies to
+      # connections that cross a network, and this one does not. The TLS path is
+      # covered by the cluster deployment further down, where the database is
+      # reached by Service name.
+      - name: Start a database for the smoke test
+        run: |
+          docker run -d --name smoke-db \
+            -e POSTGRES_USER=cloudsentinel \
+            -e POSTGRES_PASSWORD=ci-throwaway-not-a-secret \
+            -e POSTGRES_DB=cloudsentinel \
+            -p 127.0.0.1:5432:5432 \
+            postgres:17-alpine
+          for _ in $(seq 30); do
+            docker exec smoke-db pg_isready -U cloudsentinel && break
+            sleep 2
+          done
+
+      # Also proves the dependency prune in the `tools` stage did not remove
+      # something the CLIs need. The Dockerfile checks the module graph loads at
+      # build time; this checks it actually runs.
+      - name: Migrate with the tools image
+        run: |
+          docker run --rm --network host \
+            -e POSTGRES_HOST=127.0.0.1 \
+            -e POSTGRES_PASSWORD=ci-throwaway-not-a-secret \
+            cloudsentinel:tools node scripts/db.ts migrate
+
+      - name: Smoke-test the dashboard image
+        run: |
+          docker run -d --name smoke-app --network host \
+            -e POSTGRES_HOST=127.0.0.1 \
+            -e POSTGRES_PASSWORD=ci-throwaway-not-a-secret \
+            -e CLOUDSENTINEL_JWT_SECRET=ci-smoke-test-only-not-a-secret-value \
+            cloudsentinel:app
+
+          for _ in $(seq 30); do
+            curl -sf http://127.0.0.1:3000/api/healthz > /dev/null && break
+            sleep 2
+          done
+
+          # The two probes must behave differently, which is the whole reason
+          # there are two: liveness answers whenever the process is up,
+          # readiness only when the database is reachable.
+          echo "liveness:  $(curl -sf http://127.0.0.1:3000/api/healthz)"
+          echo "readiness: $(curl -sf http://127.0.0.1:3000/api/readyz)"
+
+          # An unauthenticated API request must be refused. A dashboard that
+          # served findings to anyone would be a worse hole than any the scanner
+          # reports, so it is checked against the real image rather than only in
+          # the unit tests.
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/findings)
+          test "$code" = "401" || { echo "expected 401 from /api/findings, got $code"; exit 1; }
+
+          docker rm -f smoke-app smoke-db
+
+      # Installed directly rather than through a third-party action, and pinned
+      # to a version. One fewer action in the supply chain of a project about
+      # security, and the URL states exactly what is being downloaded.
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+
+      - name: Create the cluster
+        run: npm run k8s:cluster
+
+      - name: Build and load the images
+        run: npm run k8s:build
+
+      # The real test: the same command a developer runs. A deployment that has
+      # drifted out of working order fails here rather than the next time
+      # somebody tries to demonstrate it.
+      - name: Deploy
+        run: npm run k8s:up
+
+      - name: Check the dashboard answers through the NodePort
+        run: |
+          curl -sf http://localhost:30080/api/healthz
+          curl -sf http://localhost:30080/api/readyz
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:30080/api/findings)
+          test "$code" = "401" || { echo "expected 401, got $code"; exit 1; }
+
+      # Confirms the dashboard's database connections are genuinely encrypted
+      # and verified, rather than having quietly fallen back to plaintext.
+      #
+      # `pg_stat_ssl` reports what the server actually negotiated, which is the
+      # only trustworthy source: the client asked for a verified TLS connection,
+      # and this is the server agreeing that it got one. Because the client sets
+      # `rejectUnauthorized: true` with the private CA, a row here also means
+      # certificate and hostname verification succeeded — a wrong Subject
+      # Alternative Name would have failed the connection outright.
+      - name: Verify the database connections are TLS-verified
+        run: |
+          kubectl exec -n cloudsentinel cloudsentinel-db-0 -- \
+            psql -U cloudsentinel -d cloudsentinel -tAc \
+            "select count(*) from pg_stat_ssl join pg_stat_activity using (pid) where ssl and backend_type='client backend';" \
+            | tee /tmp/ssl-count.txt
+          test "$(tr -d '[:space:]' < /tmp/ssl-count.txt)" -ge 1 || {
+            echo "no TLS-encrypted client connections found"
+            exit 1
+          }
+
+      # Verifies the NetworkPolicy is enforced, not merely stored. The reasoning
+      # for why this needs checking at all is in the probe manifest itself.
+      - name: Verify the database is unreachable without the db-client label
+        run: |
+          kubectl apply -f k8s/test/netpol-probe.yaml
+          # The probe's success path is a 15 second connection timeout, so wait
+          # for the pod to finish rather than polling it.
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+            pod/netpol-probe -n cloudsentinel --timeout=120s || true
+          kubectl logs -n cloudsentinel netpol-probe | tee /tmp/netpol.txt
+          phase=$(kubectl get pod netpol-probe -n cloudsentinel -o jsonpath='{.status.phase}')
+          kubectl delete -f k8s/test/netpol-probe.yaml --ignore-not-found
+          grep -q BLOCKED /tmp/netpol.txt || {
+            echo "NetworkPolicy is NOT enforced: the database was reachable (phase $phase)"
+            exit 1
+          }
+
+      # Always runs, so a failed deployment leaves enough behind to diagnose
+      # rather than just a red cross. Pod status plus recent events is usually
+      # the whole story — an ImagePullBackOff, a failing probe, a missing Secret.
+      - name: Diagnostics
+        if: always()
+        run: |
+          kubectl get all,networkpolicy,pvc -n cloudsentinel || true
+          kubectl describe pods -n cloudsentinel || true
+          kubectl logs -n cloudsentinel -l app.kubernetes.io/name=cloudsentinel-app --tail=50 --all-containers || true
+          kubectl get events -n cloudsentinel --sort-by=.lastTimestamp || true

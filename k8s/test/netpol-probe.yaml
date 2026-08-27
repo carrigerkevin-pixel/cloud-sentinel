@@ -1,0 +1,114 @@
+# CloudSentinel — network policy probe.
+#
+# What this is: a throwaway pod that tries to open a TCP connection to the
+# database and reports whether it got through. It is a *test*, not part of the
+# deployment, which is why it lives in k8s/test/ rather than alongside the
+# numbered manifests.
+#
+# Where it fits in the architecture: it verifies k8s/40-networkpolicy.yaml. Run
+# by the `containers` job in .github/workflows/ci.yml after every deployment,
+# and runnable by hand:
+#
+#   kubectl apply -f k8s/test/netpol-probe.yaml
+#   kubectl wait --for=condition=Ready=false pod/netpol-probe -n cloudsentinel --timeout=60s
+#   kubectl logs -n cloudsentinel netpol-probe
+#   kubectl delete -f k8s/test/netpol-probe.yaml
+#
+# ===========================================================================
+# Why this exists
+# ===========================================================================
+#
+# NetworkPolicy objects are accepted and stored by every cluster, whether or not
+# the network plugin implements them, and no warning is produced either way. So
+# a policy can be applied, appear in `kubectl get networkpolicy`, look entirely
+# correct — and be doing nothing at all. Docker Desktop's Kubernetes ignores
+# them completely; older kind releases did too.
+#
+# A security control that is believed to be active and is in fact absent is
+# worse than a known gap, because nobody goes looking for it. That is precisely
+# the class of mistake CloudSentinel exists to find in other people's
+# infrastructure, so the project should not rely on an unverified one of its
+# own. This pod is the difference between claiming the database is isolated and
+# knowing it.
+#
+# The pod deliberately does NOT carry the `cloudsentinel.dev/db-client` label.
+# That label is what k8s/40-networkpolicy.yaml selects on to permit port 5432,
+# so this pod stands in for any unrelated workload that might end up in the
+# namespace — a leftover experiment, a debug container, or something an
+# intruder started.
+#
+# Expected result: BLOCKED. Exit status 0 means the policy held; exit status 1
+# means the database was reachable from a pod that never asked for access.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netpol-probe
+  namespace: cloudsentinel
+  labels:
+    app.kubernetes.io/name: netpol-probe
+    app.kubernetes.io/part-of: cloudsentinel
+spec:
+  # The probe runs once and reports. Restarting it on failure would turn a clean
+  # pass/fail into a pod that loops forever.
+  restartPolicy: Never
+
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  containers:
+    - name: probe
+      # The `tools` image purely because it is already loaded into the cluster
+      # and contains Node. Nothing about the CLIs it carries is used here.
+      image: cloudsentinel:tools
+      imagePullPolicy: Never
+
+      # A raw TCP connect, not a database login. The question is whether packets
+      # reach port 5432 at all — an authentication failure would actually be a
+      # *worse* result than this test can tolerate, because it would mean the
+      # connection succeeded and the policy did not hold.
+      #
+      # A blocked connection presents as a timeout rather than a refusal: the
+      # policy drops the packets silently instead of sending a TCP reset, so
+      # there is nothing to fail fast on. The 15 second timeout is therefore the
+      # success path, and it is why this takes a quarter of a minute to pass.
+      command:
+        - node
+        - -e
+        - |
+          const net = require("node:net");
+          const socket = net.connect({ host: "cloudsentinel-db", port: 5432 });
+          socket.setTimeout(15000);
+          socket.on("connect", () => {
+            console.log("REACHABLE - NetworkPolicy is NOT enforced");
+            process.exit(1);
+          });
+          socket.on("timeout", () => {
+            console.log("BLOCKED - NetworkPolicy is enforced");
+            process.exit(0);
+          });
+          socket.on("error", (error) => {
+            // A refusal also means the connection did not get through. It is
+            // reported separately from a timeout because the two say different
+            // things about *how* it was stopped, which matters when debugging.
+            console.log(`REFUSED (${error.code}) - not reachable`);
+            process.exit(0);
+          });
+
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
