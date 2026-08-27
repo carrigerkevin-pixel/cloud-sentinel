@@ -274,3 +274,37 @@ RUN node --input-type=module -e "\
 # No CMD. Running this image with no arguments should fail obviously rather
 # than silently doing something — every use site names its own command, for
 # example `node scripts/db.ts migrate`.
+
+
+# ===========================================================================
+# Stage: certgen — TLS material generation
+# ===========================================================================
+#
+# A throwaway image holding the OpenSSL command line, used by `npm run k8s:up`
+# to issue the private certificate authority and the database's server
+# certificate. It is never deployed and never runs in the cluster.
+#
+# Why this stage exists rather than one of the alternatives:
+#
+#   - **Not the host's openssl.** On a normal Windows install OpenSSL arrives
+#     only as part of Git for Windows and is not on the PATH that npm scripts
+#     inherit, so a host-based approach works on Linux and CI and fails on the
+#     machine this project is developed on.
+#   - **Not the postgres or node images.** Both link against libssl but neither
+#     ships the `openssl` binary, which is a genuinely surprising thing to
+#     discover halfway through a deployment.
+#   - **Not a third-party image such as `alpine/openssl`.** Pulling a community
+#     image to generate the key material that secures the database is a
+#     supply-chain decision, and a poor one for a project whose subject is
+#     security. Everything here comes from the same official base image the rest
+#     of the build already trusts.
+#
+# The cost is one `apk add` on first build, cached thereafter. Keeping it in its
+# own stage is what stops the `openssl` binary from ending up in the `tools`
+# image, where it would be one more tool available to anyone who got a shell in
+# a container that has no use for it.
+FROM base AS certgen
+
+RUN apk add --no-cache openssl
+
+# No CMD — scripts/k8s.ts supplies the generation script.

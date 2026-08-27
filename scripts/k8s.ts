@@ -103,16 +103,18 @@ const IMAGES = {
 } as const;
 
 /**
- * The image certificate generation borrows OpenSSL from.
+ * The throwaway image certificate generation runs in.
  *
- * Deliberately the same image the database runs, for a practical reason: it is
- * already pulled by any deployment that has worked once, so generating
- * certificates adds no download. Relying on the host's `openssl` instead would
- * be simpler to read but fails on a normal Windows install, where OpenSSL
- * arrives only as part of Git for Windows and is not on the PATH that npm
- * scripts inherit.
+ * Built from the `certgen` stage of this project's own Dockerfile, which is the
+ * project's base image plus the OpenSSL command line. The reasoning for that —
+ * why not the host's openssl, why not the postgres or node images, and why not
+ * a community image such as `alpine/openssl` — is written out at that stage.
+ *
+ * It is built on demand by {@link ensureCertificates} rather than by
+ * `npm run k8s:build`, because it is needed once per deployment at most and is
+ * not part of what gets deployed.
  */
-const OPENSSL_IMAGE = "postgres:17-alpine";
+const OPENSSL_IMAGE = "cloudsentinel:certgen";
 
 /** Terminal colours, matching the other scripts in this directory. */
 const style = {
@@ -204,7 +206,15 @@ async function step(
   stdin?: string,
 ): Promise<void> {
   console.error(style.bold(`\n> ${description}`));
-  console.error(style.dim(`  ${command} ${args.join(" ")}`));
+  // The echoed command is for orientation, not for copying: the `kubectl run`
+  // behind `k8s:user` carries a whole pod specification as a single argument
+  // several thousand characters long, which buries every other line of output.
+  // Long arguments are elided rather than the line being dropped, so the shape
+  // of the command stays visible.
+  const shown = args
+    .map((arg) => (arg.length > 120 ? `${arg.slice(0, 117)}...` : arg))
+    .join(" ");
+  console.error(style.dim(`  ${command} ${shown}`));
 
   const code = await run(command, args, stdin);
   if (code !== 0) {
@@ -339,6 +349,18 @@ async function ensureCertificates(): Promise<void> {
   }
 
   mkdirSync(TLS_DIR, { recursive: true });
+
+  // Built here rather than in `npm run k8s:build`: this image never reaches the
+  // cluster, and on a repeat deployment the certificates already exist so this
+  // whole function returns before reaching it.
+  await step("Building the certificate generator", "docker", [
+    "build",
+    "--target",
+    "certgen",
+    "-t",
+    OPENSSL_IMAGE,
+    ".",
+  ]);
 
   // `-nodes` leaves the private keys unencrypted, which is correct here: a
   // passphrase would have to be supplied to Postgres at every start, so it
@@ -776,6 +798,16 @@ async function user(args: string[]): Promise<void> {
 function userPodOverrides(args: string[]): unknown {
   return {
     apiVersion: "v1",
+    metadata: {
+      labels: {
+        // Declares this pod a database client. k8s/40-networkpolicy.yaml
+        // selects on exactly this label to permit port 5432, so without it the
+        // connection is dropped and the CLI reports a connection timeout with
+        // nothing to indicate the network policy was responsible.
+        "cloudsentinel.dev/db-client": "true",
+        "app.kubernetes.io/part-of": "cloudsentinel",
+      },
+    },
     spec: {
       securityContext: {
         runAsUser: 1000,
@@ -789,9 +821,13 @@ function userPodOverrides(args: string[]): unknown {
           image: IMAGES.tools,
           imagePullPolicy: "Never",
           command: ["node", "scripts/user.ts", "create", ...args],
-          stdin: true,
-          stdinOnce: true,
-          tty: true,
+          // `stdin` and `tty` are deliberately NOT set here. `kubectl run -it`
+          // sets them itself, and it turns them *off* when it finds no terminal
+          // attached — a piped or redirected invocation, or CI. Forcing them on
+          // in the overrides desynchronises the two: the pod is created asking
+          // for a TTY while kubectl streams a separate stderr, and the API
+          // server rejects the attach with "tty and stderr cannot both be
+          // true". Letting the flags own the decision keeps both paths working.
           env: [
             { name: "POSTGRES_HOST", value: "cloudsentinel-db" },
             { name: "POSTGRES_PORT", value: "5432" },

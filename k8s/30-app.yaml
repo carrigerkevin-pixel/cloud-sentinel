@@ -95,6 +95,10 @@ spec:
         app.kubernetes.io/name: cloudsentinel-app
         app.kubernetes.io/component: dashboard
         app.kubernetes.io/part-of: cloudsentinel
+        # Declares this pod a database client, which is what
+        # k8s/40-networkpolicy.yaml selects on to permit port 5432.
+        # Without it the connection is silently dropped.
+        cloudsentinel.dev/db-client: "true"
     spec:
       # Long enough for in-flight requests to finish after the pod stops
       # receiving new ones. The image runs `node server.js` directly rather than

@@ -58,6 +58,10 @@ spec:
       labels:
         app.kubernetes.io/name: cloudsentinel-migrate
         app.kubernetes.io/part-of: cloudsentinel
+        # Declares this pod a database client, which is what
+        # k8s/40-networkpolicy.yaml selects on to permit port 5432.
+        # Without it the connection is silently dropped.
+        cloudsentinel.dev/db-client: "true"
     spec:
       # `Never`, not `OnFailure`. A failed pod is preserved for inspection and
       # the Job creates a fresh one, so the logs from the attempt that failed

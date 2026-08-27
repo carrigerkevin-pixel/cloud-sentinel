@@ -89,26 +89,44 @@ spec:
         - protocol: TCP
           port: 3000
 ---
-# Allow the database to be reached only by the dashboard and the migration Job.
+# Allow the database to be reached only by pods that declare themselves clients
+# of it.
 #
 # This is the rule that carries the most weight in the file. The database holds
 # every finding, every user's password hash, and every session's token version.
 # Without a policy, any pod anywhere in the cluster — including something
 # unrelated that a future experiment leaves running — can open a connection to
-# it and attempt to authenticate. With it, the database is unreachable from
-# everything except the two workloads that have a reason to speak to it, and a
-# stolen database password is useless from anywhere else.
+# it and attempt to authenticate. With it, a stolen database password is useless
+# from anywhere except the handful of workloads that were meant to have it.
 #
-# The two `from` entries are separate list items rather than one selector with
-# two labels, because entries in a list are ORed while labels within a single
-# selector are ANDed — combining them would match a pod that is somehow both the
-# dashboard and the migration Job, which is to say nothing at all. That is an
-# easy and silent mistake to make in NetworkPolicy, and the resulting rule
-# denies everything while looking permissive.
+# The selector is a **capability label** (`cloudsentinel.dev/db-client`) rather
+# than a list of workload names. Both were tried; the list was wrong.
+#
+# Naming workloads means every new one that touches the database — the account
+# CLI behind `npm run k8s:user`, and later a scan or anomaly-ingest Job — has to
+# be added here as well as written. Forgetting produces a connection timeout at
+# the far end with nothing pointing back at this file, which is a genuinely
+# nasty thing to debug: the pod is running, the database is healthy, the
+# password is right, and the packets are simply dropped. That failure is not
+# hypothetical — it happened while building this, to the user-creation pod.
+#
+# A label makes the requirement local to the workload that has it. A pod that
+# needs the database says so in its own manifest, next to the credentials it
+# already mounts, and this policy does not change.
+#
+# SECURITY, stated honestly: this label is a *declaration*, not an
+# authorisation. Anyone able to create a pod in this namespace can attach it and
+# reach the database. That is not a weakness introduced by using a label —
+# naming workloads instead is no better, since the same person could equally
+# create a pod named `cloudsentinel-app` — it is inherent to NetworkPolicy
+# selecting on labels. What the policy actually buys is that a workload which
+# *did not ask* for database access cannot stumble into it, which is the
+# realistic failure. Restricting who may create pods is the job of RBAC, not of
+# this file.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-db-from-app
+  name: allow-db-from-clients
   namespace: cloudsentinel
   labels:
     app.kubernetes.io/part-of: cloudsentinel
@@ -121,10 +139,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: cloudsentinel-app
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: cloudsentinel-migrate
+              cloudsentinel.dev/db-client: "true"
       ports:
         - protocol: TCP
           port: 5432
