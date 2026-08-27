@@ -398,22 +398,36 @@ async function ensureCertificates(): Promise<void> {
     "echo 'generated CA and server certificate'",
   ].join("\n");
 
-  await step(
-    "Generating the database TLS certificate",
-    "docker",
-    [
-      "run",
-      "--rm",
-      // The host directory the material is written into. An absolute path is
-      // required by Docker; `resolve` also normalises the Windows separators.
-      "-v",
-      `${resolve(TLS_DIR)}:/tls`,
-      OPENSSL_IMAGE,
-      "sh",
-      "-c",
-      script,
-    ],
-  );
+  await step("Generating the database TLS certificate", "docker", [
+    "run",
+    "--rm",
+    // Run as the invoking user on Linux and macOS.
+    //
+    // Without this the container runs as root, and OpenSSL writes the private
+    // key mode 0600 owned by root into the bind-mounted host directory. The
+    // very next thing this script does is read that file back to build the
+    // Secret — as the ordinary user — which fails with EACCES.
+    //
+    // The reason this is easy to miss: Docker Desktop on Windows does not map
+    // ownership through a bind mount, so the files simply appear owned by the
+    // developer and everything works. The failure exists only on Linux, which
+    // means only CI sees it. It was in fact CI that caught it.
+    //
+    // `process.getuid` is undefined on Windows, which is the check being made
+    // here — there is no meaningful uid to pass there, and passing one would
+    // break the Docker Desktop path that already works.
+    ...(typeof process.getuid === "function"
+      ? ["--user", `${process.getuid()}:${process.getgid?.() ?? 0}`]
+      : []),
+    // The host directory the material is written into. An absolute path is
+    // required by Docker; `resolve` also normalises the Windows separators.
+    "-v",
+    `${resolve(TLS_DIR)}:/tls`,
+    OPENSSL_IMAGE,
+    "sh",
+    "-c",
+    script,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
