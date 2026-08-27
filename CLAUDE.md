@@ -546,6 +546,132 @@ So the rule is **satisfied** instead:
    NetworkPolicy that is stored but inert looks identical to one that works.
 ✅ `npm test` — **375 tests** (up from 369), still no database, Docker or Python.
 
+### Phase 8 complete — security hardening, docs, demo script
+The final phase. The starting point was a survey rather than a checklist: `npm
+audit` was already clean, no `dangerouslySetInnerHTML` or `eval` existed
+anywhere, and nothing secret-shaped had ever been committed (only
+`.env.example`). Three genuine gaps came out of it — **no security response
+headers at all**, **no CSRF defence beyond the SameSite cookie**, and **no
+disclosure policy** — and those are what this phase fixed.
+
+**Response headers**
+✅ `next.config.ts` — the headers with no per-request component:
+   `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+   `Permissions-Policy`, `Strict-Transport-Security`, and the two Cross-Origin
+   isolation headers. `poweredByHeader: false` drops `X-Powered-By`.
+   - `Referrer-Policy` matters more here than on an ordinary site: a finding
+     detail URL contains a base64url-encoded finding id, which encodes the ARN
+     of a misconfigured resource. A leaked referrer names a currently-public
+     bucket.
+   - HSTS is inert over plain HTTP by design, so it is correct-but-dormant on
+     the NodePort and becomes active the moment TLS is in front. `preload` is
+     omitted deliberately — it is close to irreversible.
+✅ `proxy.ts` — a per-response CSP nonce. (Named `proxy.ts`, not
+   `middleware.ts`: Next 16 renamed the convention, and the old spelling logs a
+   deprecation warning on every build.)
+   - A nonce rather than `'unsafe-inline'`, because `'unsafe-inline'` permits
+     every inline script — which is exactly what an injected `<script>` is — so
+     a policy containing it looks like a control and is not one.
+   - Minting a nonce needs only `crypto.getRandomValues` and reads nothing about
+     the requester, so this does **not** reopen the phase 5 decision to keep
+     auth guards out of middleware. That reasoning (no `node:crypto`, no
+     database on the Edge runtime) still holds and is restated in the file.
+   - `'strict-dynamic'` so Next's bootstrap can load its own hashed chunks
+     without enumerating URLs that change every build.
+   - `style-src` keeps `'unsafe-inline'` — Next emits unnonced inline styles for
+     critical CSS and `next/font`. Documented as the narrower compromise it is:
+     CSS injection is real but a long way short of script execution.
+
+**The bug that only testing caught**
+The first working CSP served a **blank dashboard**, and nothing in the build or
+the type-check said so. `/login` and `/_not-found` were statically prerendered,
+so their HTML — including Next's inline bootstrap script — was generated at
+build time, long before any nonce existed. Those scripts went out unmarked and
+the policy refused them. The page returns 200 and looks perfect in `curl`.
+
+Fixed with `export const dynamic = "force-dynamic"` on the root layout, which
+costs this application nothing: every other route already reads Postgres per
+request, and the login page is a form with nothing to cache. Verified by
+asserting all ten script tags carry the nonce and that the header nonce matches
+the one in the HTML.
+
+**Cross-site request forgery**
+✅ `checkSameOrigin()` in `lib/api/http.ts`, applied to all three
+   state-changing routes (login, logout, triage).
+   - Compares `Origin` against the request's own `Host`, so it is correct on
+     localhost, on the NodePort, and behind a domain with no configuration to
+     keep in step.
+   - A **missing** `Origin` is rejected. Browsers always send it on these
+     requests, so absence means the caller is not one; allowing it would leave
+     an opt-out consisting of not sending a header.
+   - It is a second layer behind `SameSite=strict`, and it covers three real
+     gaps: a client that does not implement SameSite, a *same-site* attacker on
+     a sibling subdomain (SameSite uses the registrable domain, `Origin` does
+     not), and a future relaxation to `SameSite=lax`.
+✅ 13 tests, weighted toward the ways an origin check is usually written wrong —
+   substring comparisons that accept `evil-cloudsentinel.test` and
+   `cloudsentinel.test.attacker.test`, `Origin: null` from a sandboxed iframe,
+   and reflecting the rejected value back into the response.
+
+**A module split that had to happen**
+`lib/api/http.ts` could not be tested at all: importing it pulled
+`lib/auth/session.ts` and therefore `next/headers`, which does not resolve
+outside a Next server, so the whole suite failed to load. The session guards
+moved to `lib/api/guards.ts`, leaving `http.ts` pure.
+
+Worth recording because the **first attempt was wrong**: `http.ts` re-exported
+the guards "for convenience", which silently undid the entire split — a
+re-export is still an import, so `next/headers` came straight back and the tests
+failed identically. A module boundary that exists to keep a dependency out
+cannot also forward that dependency. The six route files now import guards
+directly. This is the mirror image of the phase 5 bug where a client component
+imported from `lib/db/triage.ts` and the bundler tried to put the PostgreSQL
+driver in a browser bundle.
+
+**Supply chain**
+✅ `npm audit --omit=dev --audit-level=high` in CI. `--omit=dev` is load-bearing:
+   an advisory against ESLint or TypeScript is not a vulnerability in the
+   deployed application, and a gate that must routinely be overridden is not a
+   gate.
+✅ Trivy image scanning, run from Trivy's own image rather than a marketplace
+   action, and fed a `docker save` tarball rather than a mounted Docker socket —
+   the socket would grant the scanner root-equivalent control of the host daemon
+   purely so it can read a filesystem layer.
+   - Two steps: a MEDIUM-and-above report that never fails, and a gate on
+     `CRITICAL` **with a fix available**. A critical with no published fix cannot
+     be acted on, and a red build nobody can clear trains people to ignore it.
+✅ The gate immediately found one: a fixable CRITICAL (CVE-2026-59873) in the
+   `tar` copy vendored inside npm in the Node base image.
+   **Fixed by deleting npm from both runtime images** rather than chasing
+   upstream's patch cadence. Neither needs it — `app` runs `node server.js`,
+   `tools` runs `node scripts/*.ts` — and npm is a program whose purpose is
+   fetching and executing remote code, which is precisely what an intruder in a
+   container wants. Same argument that keeps `scripts/` and the AWS SDK out of
+   the dashboard image, applied to the base image's own tooling.
+
+**Documentation**
+✅ `SECURITY.md` — disclosure process (GitHub private advisories, deliberately
+   not a personal email address on a public repo), scope including what is
+   explicitly *out* of scope (the intentionally-insecure fixtures are the point,
+   not a bug), an adversary/defence threat-model table, and a known-limitations
+   list.
+✅ README — a Security section with a control summary table, and the two
+   consequences that affect anyone using the API by hand (`Origin` required on
+   writes).
+✅ `docs/demo.md` — a six-minute walkthrough script, structured around four
+   decisions rather than a feature tour, with a three-minute cut-down. Includes
+   a recording checklist with the explicit warning not to show `.env`,
+   `k8s/tls/`, or `kubectl get secret -o yaml` on camera.
+
+**Verified**
+- All headers present through the Kubernetes NodePort on the redeployed images.
+- CSRF guard live in-cluster: no Origin → 403, attacker Origin → 403, correct
+  Origin → 401 (reaches the authentication path), `GET` unaffected.
+- Every script tag nonced; the nonce rotates per response.
+- Both images pass the fixable-CRITICAL gate after npm removal, and the `tools`
+  image's CLI module graph still loads.
+✅ `npm test` — **388 tests** (up from 375).
+
 ### Getting the dashboard running
 ```
 docker compose up -d db
@@ -624,9 +750,27 @@ the dashboard reads the database, not AWS.
   `node:24-slim` container via Docker) and commit that version. Do not run a
   plain `npm install` afterwards, or it will strip the entries again.
 ## Not started yet (next steps)
-1. Security hardening pass, README polish, demo video
+All eight phases are complete. The one outstanding deliverable is the **demo
+video itself**, which has to be recorded by hand — `docs/demo.md` is the script,
+shot list, and pre-recording checklist for it.
 
 Known follow-ups, none blocking:
+- **`style-src` still allows `'unsafe-inline'`.** Next emits unnonced inline
+  styles for critical CSS and `next/font`, so a strict style policy would break
+  rendering. Closing it needs either nonced style tags from Next or moving those
+  declarations into a stylesheet.
+- **The `Origin` check trusts `Host`.** Behind a reverse proxy that forwards an
+  attacker-chosen Host, it would be bypassable — the same trust assumption
+  `lib/api/rate-limit.ts` documents for `x-forwarded-for`.
+- **Trivy's gate is `CRITICAL` and fixable only.** HIGH findings are reported
+  but do not fail the build. Tightening to HIGH would be reasonable once the
+  base image's churn is understood; doing it now would likely mean routinely
+  overriding the gate.
+- **There is no automated check that new API routes are guarded.** Protection is
+  opt-in per route by design (the reasoning is in `lib/api/guards.ts`), so a new
+  route that forgets `requireUser` or `checkSameOrigin` is caught only in
+  review. A lint rule or a test enumerating `app/api/**/route.ts` and asserting
+  each handler calls a guard would close it.
 - **The NodePort serves plain HTTP.** `NODE_ENV=production` marks the session
   cookie `Secure`, which browsers only send over HTTPS — this works at
   `localhost` because Chrome and Firefox treat it as a secure context, but on
