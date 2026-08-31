@@ -6,6 +6,20 @@ A hybrid rule-based and ML-based **Cloud Security Posture Management (CSPM)** to
 It audits a simulated AWS environment for misconfigurations, detects anomalous
 behaviour via a machine-learning layer, and presents both in a dashboard.
 
+## Screenshots
+
+### Overview
+![Dashboard overview showing risk score and severity breakdown](docs/screenshots/overview.png)
+
+### Findings
+![Filterable findings list](docs/screenshots/findings.png)
+
+### Finding Detail
+![Finding detail with evidence and remediation](docs/screenshots/finding-detail.png)
+
+### Anomalies
+![Anomaly detection showing both models' scores](docs/screenshots/anomalies.png)
+
 Built as a portfolio project — Georgia Tech CS, Cybersecurity thread.
 
 Two independent pipelines, answering two different questions:
