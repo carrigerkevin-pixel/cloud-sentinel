@@ -1,5 +1,7 @@
 # CloudSentinel
 
+**Live demo:** https://cloud-sentinel-ld8c-omega.vercel.app/
+
 A hybrid rule-based and ML-based **Cloud Security Posture Management (CSPM)** tool.
 It audits a simulated AWS environment for misconfigurations, detects anomalous
 behaviour via a machine-learning layer, and presents both in a dashboard.
