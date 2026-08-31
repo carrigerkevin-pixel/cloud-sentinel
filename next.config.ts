@@ -34,7 +34,7 @@ const nextConfig: NextConfig = {
    * nothing imports them, so those are copied explicitly. Miss that step and
    * the site renders unstyled. It is called out in a comment there.
    */
-  output: "standalone",
+  output: process.env.VERCEL ? undefined : "standalone",
 
   /**
    * Security response headers.
